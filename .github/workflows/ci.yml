@@ -8,6 +8,15 @@ name: ci
 # Keep this workflow minimal. Anything heavier (golangci-lint strict
 # config, integration tests, real-protocol smoke) belongs in a sibling
 # workflow that doesn't gate the PR feedback loop.
+#
+# Fyne deps (Track B): internal/ui imports fyne.io/fyne/v2 which pulls in
+# go-gl/glfw + go-gl/gl, both CGO and both needing Linux GL/X11 dev
+# headers. Without those, `go vet ./...` and `go build ./...` fail when
+# they walk into internal/ui. We install the minimal Fyne Linux dep set
+# (libgl1-mesa-dev, xorg-dev, libxxf86vm-dev) and let CGO default on
+# (ubuntu-latest ships gcc) so the host build just works. Cross-compile
+# of the GUI binary belongs in release.yml's per-host matrix; this
+# workflow is host-native only.
 
 on:
   push:
@@ -28,6 +37,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Fyne Linux build deps
+        # Minimal set per Fyne docs: GL + X11 dev headers. xorg-dev pulls
+        # in libx11-dev / libxcursor-dev / libxrandr-dev / libxinerama-dev
+        # / libxi-dev transitively. libxxf86vm-dev is needed by glfw on
+        # some configurations.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libxxf86vm-dev
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

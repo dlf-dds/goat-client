@@ -3,20 +3,36 @@ name: release
 # HANDOFF.md Track E — five-platform CI matrix + cosign-signed releases.
 # Mirrors goat-trunk's snitch.yml (Block 61H pattern):
 #   - six desktop targets: linux/{amd64,arm64} darwin/{amd64,arm64} windows/{amd64,arm64}
-#   - CGO_ENABLED=0 throughout (per Track E spec; revisit if Fyne GUI in
-#     Track B forces CGO=1 — that's a captain decision)
+#   - CGO_ENABLED=0 throughout the daemon path (pure-Go, cross-compile clean)
 #   - reproducible build flags: -trimpath -buildvcs=false -ldflags="-s -w"
-#   - per-platform archive bundling both binaries (goat-client GUI +
-#     goat-clientd daemon); per-archive .sha256 sidecar; aggregate
-#     SHA256SUMS manifest
+#   - per-platform archive of the daemon; per-archive .sha256 sidecar;
+#     aggregate SHA256SUMS manifest
 #   - cosign keyless signing via sigstore + GitHub Actions OIDC on tag
 #     push (refs/tags/goat-client-v*); per-archive .cosign-bundle sidecar
 #   - GitHub Release with all assets on tag push
 #
-# Why archives instead of raw binaries: each platform deliverable is a
-# pair (GUI + daemon). Bundling them as one platform-tagged archive
-# matches the "6 binaries + 6 .sha256" intent in HANDOFF.md (six per-
-# platform deliverables). Operators verify with:
+# Scope today (CGO/Fyne reconciliation):
+#
+#   The daemon binary (cmd/goat-clientd) is pure Go and cross-compiles
+#   cleanly to all six targets from a single ubuntu-latest runner with
+#   CGO_ENABLED=0. The GUI binary (cmd/goat-client) imports
+#   internal/ui which depends on fyne.io/fyne/v2 — that requires CGO=1
+#   plus per-host system libs (Linux: libgl1-mesa-dev xorg-dev; macOS:
+#   built-in; Windows: mingw). Cross-CGO + Fyne from a single Linux
+#   runner is a hairy yak we are not yaking today.
+#
+#   This workflow ships daemon-only archives across all six targets.
+#
+# FOLLOW-UP (captain owns scheduling): add a sibling `gui-matrix` job
+# that runs on per-host runners (ubuntu-latest, macos-latest, windows-
+# latest) with CGO=1 + Fyne system deps and emits the GUI binary. A
+# downstream `package` job then merges daemon + GUI into the per-
+# platform archive where both exist. Until then, operators use the
+# packaging/ artifacts (Track F) for full GUI+daemon installs.
+#
+# Why archives instead of raw binaries: future-proofing for the
+# follow-up — once GUI binaries land, the archive becomes the natural
+# place to ship daemon+GUI as a pair.
 #
 #   cosign verify-blob \
 #     --bundle goat-client-linux-amd64.tar.gz.cosign-bundle \
@@ -83,9 +99,14 @@ jobs:
           set -euo pipefail
           ts=$(git log -1 --format=%ct HEAD)
           echo "epoch=${ts}" >> "$GITHUB_OUTPUT"
-      - name: go vet (per-target view of build tags)
-        run: go vet ./...
-      - name: Cross-compile binaries
+      - name: go vet (daemon path)
+        # Scoped to the daemon's transitive package set so the matrix
+        # never walks into internal/ui (Fyne, CGO=1). Use the explicit
+        # `cmd/goat-clientd/...` plus its in-tree deps; `go vet
+        # ./cmd/goat-clientd` is enough — Go vets the package and its
+        # imports.
+        run: go vet ./cmd/goat-clientd/...
+      - name: Cross-compile daemon
         id: build
         env:
           SOURCE_DATE_EPOCH: ${{ steps.ts.outputs.epoch }}
@@ -94,25 +115,26 @@ jobs:
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
           mkdir -p stage
-          # Both desktop binaries land in the same archive — see
-          # workflow header for rationale.
-          go build -trimpath -buildvcs=false -ldflags="-s -w" \
-            -o "stage/goat-client${ext}" ./cmd/goat-client
+          # Daemon-only today (see workflow header). When the GUI per-host
+          # matrix lands, a downstream package job merges goat-client into
+          # the same archive.
           go build -trimpath -buildvcs=false -ldflags="-s -w" \
             -o "stage/goat-clientd${ext}" ./cmd/goat-clientd
           echo "ext=${ext}" >> "$GITHUB_OUTPUT"
-      - name: Verify per-target test compile
-        # Build-tag-split per-OS files — once Track A's per-platform DNS
-        # adapters land — will need their test files compilable per
-        # target. Today's scaffold has no tests, so this is a no-op
-        # placeholder that will exercise once tests exist. Kept here so
-        # the same pattern as goat-trunk snitch is in place.
+      - name: Verify per-target test compile (daemon path)
+        # Once Track A lands per-platform DNS adapters, their _test.go
+        # files need to compile per target. Scope to daemon path for the
+        # same reason as the vet step above.
         run: |
           set -euo pipefail
-          if find . -name '*_test.go' -not -path './.git/*' | head -1 | grep -q .; then
-            go test -count=0 ./... >/dev/null
+          if find ./cmd/goat-clientd ./internal -name '*_test.go' \
+             -not -path '*/internal/ui/*' \
+             | head -1 | grep -q .; then
+            # Compile-only walk of the daemon's importable test set.
+            mapfile -t pkgs < <(go list ./... | grep -v 'internal/ui')
+            go test -count=0 "${pkgs[@]}" >/dev/null
           else
-            echo "no _test.go files yet; skipping per-target test compile"
+            echo "no daemon-path _test.go files yet; skipping"
           fi
       - name: Pack platform archive
         id: pack
@@ -128,7 +150,7 @@ jobs:
             # are platform-relative (we cd into stage/) for clean
             # archive layout.
             (cd stage && zip -X -9 "../${archive}" \
-              "goat-client${ext}" "goat-clientd${ext}" >/dev/null)
+              "goat-clientd${ext}" >/dev/null)
           else
             archive="${name}.tar.gz"
             # GNU tar reproducibility flags: lock owner/group/mtime,
@@ -137,7 +159,7 @@ jobs:
             tar --sort=name \
                 --mtime="@${SOURCE_DATE_EPOCH}" \
                 --owner=0 --group=0 --numeric-owner \
-                -cf - -C stage "goat-client${ext}" "goat-clientd${ext}" \
+                -cf - -C stage "goat-clientd${ext}" \
               | gzip -9n > "${archive}"
           fi
           sha256sum "${archive}" > "${archive}.sha256"
@@ -289,8 +311,9 @@ jobs:
             ## goat-client ${{ github.ref_name }}
 
             Six desktop targets, each shipped as a `.tar.gz` (Linux / macOS) or
-            `.zip` (Windows) bundling both binaries: `goat-client` (Fyne GUI)
-            and `goat-clientd` (system daemon).
+            `.zip` (Windows) carrying the `goat-clientd` daemon. The Fyne GUI
+            (`goat-client`) is delivered via the per-platform installers from
+            Track F (`packaging/`) until the per-host GUI build matrix lands.
 
             ### Verifying
 
