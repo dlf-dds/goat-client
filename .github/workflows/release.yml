@@ -193,9 +193,15 @@ jobs:
         # bin/ to PATH so go's cgo picks up `clang` (mingw target).
         # windows-latest amd64 already has MinGW preinstalled, so this
         # step is arm64-only.
+        #
+        # llvm-mingw publishes msvcrt-* zips only for x86_64 / i686 /
+        # armv7. The aarch64 host build is shipped exclusively as
+        # ucrt-aarch64.zip — UCRT is the right choice on Windows 10+
+        # anyway (and required for arm64 Windows). Pinned version
+        # 20260421 (LLVM 22.1.4) — bump as upstream cuts releases.
         run: |
-          $version = '20250528'
-          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${version}/llvm-mingw-${version}-msvcrt-aarch64.zip"
+          $version = '20260421'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${version}/llvm-mingw-${version}-ucrt-aarch64.zip"
           Write-Host "Downloading llvm-mingw ${version} aarch64 from $url"
           Invoke-WebRequest -Uri $url -OutFile llvm-mingw.zip
           Expand-Archive -Path llvm-mingw.zip -DestinationPath C:\ -Force
