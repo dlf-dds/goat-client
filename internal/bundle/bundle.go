@@ -37,7 +37,13 @@ const Version uint8 = 1
 type Kind string
 
 const (
-	KindRelay Kind = "relay"
+	// KindRelay matches the goat-trunk bundle-create canonical value
+	// "cp-relay" (the wg-cp0 outer-tunnel relay kind). The earlier
+	// "relay" string in this mirror was a schema-drift bug:
+	// ops/enrollment/cmd/bundle-create/ has always emitted "cp-relay",
+	// so every production bundle silently failed FromBundle with
+	// ErrNoEndpoint until this constant was reconciled.
+	KindRelay Kind = "cp-relay"
 	KindPeer  Kind = "peer"
 	KindMgmt  Kind = "mgmt"
 )

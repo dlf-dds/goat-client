@@ -35,9 +35,11 @@ import (
 // IPv6 minimum, matching netbird/iface DefaultMTU.
 const DefaultMTU = 1280
 
-// DefaultInterfaceName is the wg-cp0 outer-tunnel interface name. The
-// design doc fixes this so operators see a predictable device name.
-const DefaultInterfaceName = "wg-cp0"
+// DefaultInterfaceName is the wg-cp0 outer-tunnel interface name. Defined
+// per-platform in platform_{linux,darwin,windows}.go because macOS
+// requires `utun[0-9]*` (the kernel allocates the number; we pass "utun"
+// and read the assigned name back via tun.Device.Name()), while Linux and
+// Windows accept the design-doc-canonical "wg-cp0".
 
 // Config is the single-peer config that brings the tunnel up. Caller
 // derives this from a verified EnrollmentBundle (typically via

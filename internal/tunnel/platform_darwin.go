@@ -8,6 +8,14 @@ import (
 	"os/exec"
 )
 
+// DefaultInterfaceName on macOS is "utun" (no number) — the kernel
+// requires utun[0-9]* and allocates a number when we pass the bare
+// "utun" prefix to wireguard-go's tun.CreateTUN. The actual allocated
+// name (e.g. "utun7") is read back via the returned Device's Name()
+// method and propagated through cfg.InterfaceName for downstream
+// platformAssignAddress / platformAddRoute calls. F-110.
+const DefaultInterfaceName = "utun"
+
 // platformAssignAddress on macOS uses ifconfig because the utun
 // interfaces created by wireguard-go take their address via the
 // classic BSD socket-control IOCTLs, which `ifconfig` wraps. The peer

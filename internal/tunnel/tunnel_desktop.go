@@ -66,6 +66,14 @@ func (d *desktopTunnel) Configure(cfg Config) error {
 	if err := d.open(cfg.InterfaceName, int(cfg.MTU)); err != nil {
 		return err
 	}
+	// On macOS the kernel allocates the actual utun number when we pass
+	// "utun" to tun.CreateTUN — read it back via tun.Device.Name() and
+	// propagate so downstream platformAssignAddress / platformAddRoute
+	// target the real interface (e.g. "utun7"), not the request prefix.
+	// F-110.
+	if name, err := d.t.Name(); err == nil && name != "" {
+		cfg.InterfaceName = name
+	}
 	uapi, err := buildUAPI(cfg)
 	if err != nil {
 		return err

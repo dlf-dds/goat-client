@@ -8,6 +8,10 @@ import (
 	"os/exec"
 )
 
+// DefaultInterfaceName on Linux is the design-doc-canonical "wg-cp0".
+// Linux accepts arbitrary tun device names (unlike macOS — F-110).
+const DefaultInterfaceName = "wg-cp0"
+
 // platformAssignAddress assigns the wg-cp0 address via `ip addr` so the
 // kernel routing table sees the interface on the right subnet. We shell
 // out to iproute2 rather than linking netlink directly to keep the binary

@@ -8,6 +8,10 @@ import (
 	"os/exec"
 )
 
+// DefaultInterfaceName on Windows is the design-doc-canonical "wg-cp0".
+// WinTun adapters accept arbitrary names (unlike macOS — F-110).
+const DefaultInterfaceName = "wg-cp0"
+
 // platformAssignAddress assigns the wg-cp0 address on Windows via
 // `netsh interface ip` so the wintun adapter participates in the
 // routing table. Wintun adapters are created via wireguard-go's
