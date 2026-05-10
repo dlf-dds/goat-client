@@ -77,6 +77,6 @@ jobs:
         # 3-Clause). Enabled linters: errcheck, gosec, govet, revive,
         # staticcheck, unused, plus 13 others. See .golangci.yaml
         # header for full rationale.
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
