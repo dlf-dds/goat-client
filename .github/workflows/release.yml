@@ -3,23 +3,42 @@ name: release
 # HANDOFF.md Track E — five-platform CI matrix + cosign-signed releases.
 # Mirrors goat-trunk's snitch.yml (Block 61H pattern):
 #   - six desktop targets: linux/{amd64,arm64} darwin/{amd64,arm64} windows/{amd64,arm64}
-#   - DAEMON cross-compiled with CGO_ENABLED=0 (reproducible, Track E spec)
-#   - GUI cross-compile is deferred — Fyne v2.7's go-gl/glfw imports need
-#     CGO + platform-native windowing/GL toolchains (X11/Mesa on Linux,
-#     Cocoa/AppKit on darwin, Win32 on windows) which a Linux cross-
-#     compile runner can't easily satisfy. Phase 2 of Track E will add a
-#     parallel matrix that builds the GUI natively on each platform's
-#     GitHub-hosted runner (ubuntu-latest / macos-latest / windows-latest).
-#     Until then, releases ship daemon-only binaries and the GUI is built
-#     by operators via `go build ./cmd/goat-client` on their host.
 #   - reproducible build flags: -trimpath -buildvcs=false -ldflags="-s -w"
 #   - per-archive .sha256 sidecar; aggregate SHA256SUMS manifest
 #   - cosign keyless signing via sigstore + GitHub Actions OIDC on tag
 #     push (refs/tags/goat-client-v*); per-archive .cosign-bundle sidecar
 #   - GitHub Release with all assets on tag push
 #
-# Why archives instead of raw binaries: matches the "6 binaries + 6 .sha256"
-# intent in HANDOFF.md (six per-platform deliverables). Operators verify with:
+# ## Two-matrix structure (Phase 2)
+#
+# `build-daemon-matrix` cross-compiles `cmd/goat-clientd` from a single
+# ubuntu-latest with `CGO_ENABLED=0`. Six fan-out rows; each finishes in
+# under a minute. Runs on every PR + push + tag + schedule for fast
+# regression catch. Daemon-only artifacts (`goat-clientd-*`) ship to the
+# Actions artifact store for debugging but are NOT consumed by the
+# release path — they're a sanity net.
+#
+# `build-gui-matrix` builds BOTH `cmd/goat-clientd` AND `cmd/goat-client`
+# (the Fyne GUI) on per-OS native runners with `CGO_ENABLED=1`. Six
+# fan-out rows, each on its own runner image:
+#   - linux/amd64    → ubuntu-latest      (apt: Fyne X11/Wayland deps)
+#   - linux/arm64    → ubuntu-24.04-arm   (apt: same)
+#   - darwin/amd64   → macos-13           (Cocoa shipping in the SDK)
+#   - darwin/arm64   → macos-latest       (Apple Silicon)
+#   - windows/amd64  → windows-latest     (MinGW preinstalled)
+#   - windows/arm64  → windows-11-arm     (clang via MSVC build tools)
+# This matrix gates the tag-push release path. The `goat-client-*`
+# archives ship with both binaries side by side under
+# `dist/<goos>_<goarch>/`, which is the layout `packaging/` expects.
+#
+# Why two matrices: Fyne v2.7's go-gl/glfw imports need CGO + a per-OS
+# native windowing toolchain (X11/Mesa on Linux, Cocoa/AppKit on macOS,
+# Win32/MinGW on Windows). A Linux cross-compile runner can't satisfy
+# any of those. Native runners give us a real toolchain at the cost of
+# slower wall-clock; the daemon-only Linux cross-compile keeps PR
+# feedback under a minute.
+#
+# Operators verify any archive with:
 #
 #   cosign verify-blob \
 #     --bundle goat-client-linux-amd64.tar.gz.cosign-bundle \
@@ -28,11 +47,10 @@ name: release
 #     goat-client-linux-amd64.tar.gz
 #
 # Triggers:
-#   - PR / push to main: build matrix + checksums (catches per-target
-#     regressions before tag time)
-#   - tag push goat-client-v*: build + checksums + cosign + Release
-#   - weekly cron: drift catch on toolchain / dependencies
-#   - workflow_dispatch: ad-hoc
+#   - PR: daemon-matrix only (fast feedback). GUI matrix is opt-out by
+#     `if: github.event_name != 'pull_request'`.
+#   - push to main / tag / schedule / workflow_dispatch: both matrices.
+#   - tag push goat-client-v*: cosign + GitHub Release wired in.
 
 on:
   push:
@@ -54,8 +72,8 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  build-matrix:
-    name: build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+  build-daemon-matrix:
+    name: daemon ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,9 +96,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Resolve commit timestamp for reproducibility
-        # Sets SOURCE_DATE_EPOCH to the HEAD commit's author time so tar
-        # mtimes below — and any tooling that consults the env var — are
-        # deterministic across re-runs of the same SHA.
         id: ts
         run: |
           set -euo pipefail
@@ -90,7 +105,7 @@ jobs:
         # Vet only the daemon-side packages: cmd/goat-client + internal/ui
         # pull in go-gl/glfw which needs a CGO + native-windowing toolchain
         # the cross-compile runner doesn't have. Native GUI vet runs in
-        # ci.yml (Linux amd64 with X11/GL apt packages).
+        # ci.yml and in the build-gui-matrix below.
         run: go vet ./cmd/goat-clientd ./internal/bundle/... ./internal/ipc/... ./internal/tunnel/... ./internal/daemon/... ./internal/reachability/...
       - name: Cross-compile daemon binary
         id: build
@@ -101,19 +116,10 @@ jobs:
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
           mkdir -p stage
-          # Daemon-only cross-compile — see workflow header for the
-          # GUI deferral rationale. The GUI binary is operator-built
-          # against the host's native CGO toolchain until Phase 2 of
-          # Track E adds a parallel native-runner matrix.
           go build -trimpath -buildvcs=false -ldflags="-s -w" \
             -o "stage/goat-clientd${ext}" ./cmd/goat-clientd
           echo "ext=${ext}" >> "$GITHUB_OUTPUT"
       - name: Verify per-target test compile
-        # Build-tag-split per-OS files (peercreds_*.go on POSIX,
-        # platform_*.go on each desktop) need their _test.go files
-        # compilable per target. Skip the GUI packages for the same
-        # CGO reason as the vet step above.
-        #
         # `go test -c` compiles a test binary without running it.
         # `go test -count=0` would actually exec the cross-compiled
         # binary on this Linux runner — windows.exe / darwin Mach-O
@@ -124,42 +130,202 @@ jobs:
           for pkg in ./internal/bundle ./internal/ipc ./internal/tunnel; do
             go test -c -o /dev/null "$pkg"
           done
-      - name: Pack platform archive
+      - name: Upload daemon-only artifact (sanity, not consumed by release)
+        uses: actions/upload-artifact@v4
+        with:
+          # Distinct name from `goat-client-*` so the release path's
+          # download-artifact + flatten step doesn't pick these up.
+          name: goat-clientd-only-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: stage/goat-clientd${{ steps.build.outputs.ext }}
+          if-no-files-found: error
+          retention-days: 14
+
+  build-gui-matrix:
+    name: gui ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+    # Skip on PRs — six native-runner builds is too slow for PR-time
+    # feedback. Daemon cross-compile (above) covers PRs; full native
+    # matrix runs on every push to main, every tag, the weekly cron,
+    # and on demand via workflow_dispatch.
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux,   goarch: amd64, runner: ubuntu-latest    }
+          - { goos: linux,   goarch: arm64, runner: ubuntu-24.04-arm }
+          - { goos: darwin,  goarch: amd64, runner: macos-13         }
+          - { goos: darwin,  goarch: arm64, runner: macos-latest     }
+          - { goos: windows, goarch: amd64, runner: windows-latest   }
+          - { goos: windows, goarch: arm64, runner: windows-11-arm   }
+    env:
+      CGO_ENABLED: "1"
+      GOOS: ${{ matrix.target.goos }}
+      GOARCH: ${{ matrix.target.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install Fyne build dependencies (Linux)
+        if: runner.os == 'Linux'
+        # Fyne v2.7 needs CGO + Mesa GL + X11 + Wayland + xkbcommon dev
+        # headers. Standard list from https://docs.fyne.io/started/.
+        # Same set works on amd64 (ubuntu-latest) and arm64
+        # (ubuntu-24.04-arm).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libxkbcommon-dev libwayland-dev \
+            libxxf86vm-dev pkg-config
+
+      - name: Install llvm-mingw (windows/arm64 only)
+        if: matrix.target.runner == 'windows-11-arm'
+        shell: pwsh
+        # windows-11-arm ships MSVC build tools + clang in the MSVC ABI,
+        # but Go's cgo on windows/arm64 expects a MinGW-style toolchain.
+        # llvm-mingw is the canonical cross/host MinGW toolchain that
+        # supports aarch64 hosts; we pin a release and prepend its
+        # bin/ to PATH so go's cgo picks up `clang` (mingw target).
+        # windows-latest amd64 already has MinGW preinstalled, so this
+        # step is arm64-only.
+        run: |
+          $version = '20250528'
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${version}/llvm-mingw-${version}-msvcrt-aarch64.zip"
+          Write-Host "Downloading llvm-mingw ${version} aarch64 from $url"
+          Invoke-WebRequest -Uri $url -OutFile llvm-mingw.zip
+          Expand-Archive -Path llvm-mingw.zip -DestinationPath C:\ -Force
+          $dir = (Get-ChildItem C:\ -Directory -Filter 'llvm-mingw-*' | Select-Object -First 1).FullName
+          $bin = Join-Path $dir 'bin'
+          Write-Host "Adding $bin to PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV  -Value "CC=clang"
+          Add-Content -Path $env:GITHUB_ENV  -Value "CXX=clang++"
+      - name: Probe Windows toolchain
+        if: runner.os == 'Windows'
+        shell: bash
+        # Log the resolved C compiler for diagnostic context in case
+        # the GUI build fails downstream. windows-latest amd64 picks
+        # up MinGW's gcc; windows-11-arm picks up llvm-mingw's clang
+        # from the install step above.
+        run: |
+          set -euo pipefail
+          echo "## Windows CC probe (${GOARCH})"
+          echo "CC env: ${CC:-<unset>}"
+          for cc in gcc clang cc "${CC:-}"; do
+            [ -z "$cc" ] && continue
+            if command -v "$cc" >/dev/null 2>&1; then
+              echo "found: $cc -> $(command -v "$cc")"
+              "$cc" --version | head -1 || true
+            fi
+          done
+
+      - name: Resolve commit timestamp for reproducibility
+        id: ts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ts=$(git log -1 --format=%ct HEAD)
+          echo "epoch=${ts}" >> "$GITHUB_OUTPUT"
+
+      - name: Build daemon + GUI (native, CGO=1)
+        id: build
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.ts.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+
+          # Track F packaging expects dist/<goos>_<goarch>/ to carry both
+          # binaries. We build into that layout and then archive the dir.
+          dist_dir="dist/${GOOS}_${GOARCH}"
+          mkdir -p "$dist_dir"
+
+          # Daemon — compiled with CGO=1 here (the cross-compile job is
+          # CGO=0 for portability; the native job stays CGO=1 to share
+          # the toolchain with the GUI build below). Both link cleanly.
+          go build -trimpath -buildvcs=false -ldflags="-s -w" \
+            -o "${dist_dir}/goat-clientd${ext}" ./cmd/goat-clientd
+
+          # GUI — Fyne, requires CGO=1.
+          go build -trimpath -buildvcs=false -ldflags="-s -w" \
+            -o "${dist_dir}/goat-client${ext}" ./cmd/goat-client
+
+          ls -la "$dist_dir"
+          echo "ext=${ext}" >> "$GITHUB_OUTPUT"
+          echo "dist_dir=${dist_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack platform archive (both binaries)
         id: pack
+        shell: bash
         env:
           SOURCE_DATE_EPOCH: ${{ steps.ts.outputs.epoch }}
         run: |
           set -euo pipefail
           ext="${{ steps.build.outputs.ext }}"
+          dist_dir="${{ steps.build.outputs.dist_dir }}"
           name="goat-client-${GOOS}-${GOARCH}"
+
           if [ "$GOOS" = "windows" ]; then
             archive="${name}.zip"
-            # -X strips extra zip fields, -9 max compression, paths
-            # are platform-relative (we cd into stage/) for clean
-            # archive layout.
-            (cd stage && zip -X -9 "../${archive}" \
-              "goat-clientd${ext}" >/dev/null)
+            # -X strips extra zip fields, -9 max compression. cd into
+            # dist_dir so the archive layout is flat (both .exe at top
+            # level), matching the .tar.gz layout.
+            (cd "$dist_dir" && zip -X -9 "../../${archive}" \
+              "goat-clientd${ext}" "goat-client${ext}" >/dev/null)
           else
             archive="${name}.tar.gz"
             # GNU tar reproducibility flags: lock owner/group/mtime,
             # numeric ids, sorted entries. gzip -n strips the original
             # filename + mtime from the gzip header.
-            tar --sort=name \
-                --mtime="@${SOURCE_DATE_EPOCH}" \
-                --owner=0 --group=0 --numeric-owner \
-                -cf - -C stage "goat-clientd${ext}" \
-              | gzip -9n > "${archive}"
+            #
+            # macOS ships BSD tar by default; gtar from setup-go's
+            # path or homebrew is the GNU variant. macOS runners have
+            # gtar preinstalled at /usr/local/bin or via homebrew. Fall
+            # back to BSD tar if gtar isn't available — the resulting
+            # archive isn't byte-reproducible across runners but the
+            # .sha256 on the same runner stays stable.
+            tar_bin=tar
+            if command -v gtar >/dev/null 2>&1; then
+              tar_bin=gtar
+            fi
+            if "$tar_bin" --version | head -1 | grep -qi 'gnu tar'; then
+              "$tar_bin" --sort=name \
+                  --mtime="@${SOURCE_DATE_EPOCH}" \
+                  --owner=0 --group=0 --numeric-owner \
+                  -cf - -C "$dist_dir" "goat-clientd${ext}" "goat-client${ext}" \
+                | gzip -9n > "${archive}"
+            else
+              # BSD tar fallback (macos-13). Same content, slightly
+              # different metadata; sha256 still verifies on download.
+              tar -cf - -C "$dist_dir" "goat-clientd${ext}" "goat-client${ext}" \
+                | gzip -9n > "${archive}"
+            fi
           fi
-          sha256sum "${archive}" > "${archive}.sha256"
+
+          # sha256sum is GNU coreutils on Linux; macOS uses `shasum -a 256`.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${archive}" > "${archive}.sha256"
+          else
+            shasum -a 256 "${archive}" > "${archive}.sha256"
+          fi
+
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           {
-            echo "### goat-client ${GOOS}/${GOARCH}"
+            echo "### goat-client ${GOOS}/${GOARCH} (native, CGO=1)"
             echo
             echo "- Archive: \`${archive}\`"
             echo "- SHA-256: \`$(awk '{print $1}' "${archive}.sha256")\`"
-            echo "- Trimpath + stripped (\`-s -w\`); CGO_ENABLED=0"
+            echo "- Contents: \`goat-clientd${ext}\` + \`goat-client${ext}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
         with:
@@ -172,12 +338,16 @@ jobs:
 
   checksums:
     name: aggregate SHA256SUMS
-    needs: build-matrix
+    needs: build-gui-matrix
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Download all matrix artifacts
+      - name: Download GUI-matrix artifacts
         uses: actions/download-artifact@v4
         with:
+          # Match the gui-matrix archive names; daemon-only artifacts
+          # are filtered out by this pattern.
+          pattern: goat-client-*
           path: artifacts
       - name: Build SHA256SUMS manifest
         run: |
@@ -204,11 +374,83 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  package-deb-smoke:
+    name: package smoke (.deb, linux/amd64)
+    # Track F's packaging expects dist/<goos>_<goarch>/ to contain BOTH
+    # binaries; this job exercises that contract by unpacking the
+    # gui-matrix linux/amd64 archive into the layout, running nfpm, and
+    # linting the resulting .deb. Confirms the GUI binary is now picked
+    # up by the package — was previously a `ghost` placeholder because
+    # daemon-only archives didn't carry it.
+    needs: build-gui-matrix
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download linux/amd64 archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goat-client-linux-amd64
+          path: stage
+      - name: Stage binaries into dist/linux_amd64/
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux_amd64
+          tar -xzf stage/goat-client-linux-amd64.tar.gz -C dist/linux_amd64
+          ls -la dist/linux_amd64
+          test -x dist/linux_amd64/goat-client
+          test -x dist/linux_amd64/goat-clientd
+      - name: Install nfpm + lintian
+        run: |
+          set -euo pipefail
+          # nfpm v2 from the goreleaser apt repo. Pinned to v2.46 (last
+          # smoke-validated version per packaging/README.md).
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.46.0/nfpm_2.46.0_amd64.deb -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends lintian
+      - name: Build .deb
+        env:
+          VERSION: 0.0.1
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          packaging/build-linux-pkg.sh deb
+          ls -la dist/*.deb
+      - name: Inspect .deb contents
+        # Confirms BOTH binaries are present in the .deb. Catches a
+        # regression where the GUI source path is renamed or the nfpm
+        # contents stanza loses an entry.
+        run: |
+          set -euo pipefail
+          deb=$(find dist -maxdepth 1 -name 'goat-client_*_amd64.deb' -print -quit)
+          dpkg-deb -c "$deb" | tee /tmp/deb-contents.txt
+          grep -E '\./usr/bin/goat-client$'  /tmp/deb-contents.txt
+          grep -E '\./usr/bin/goat-clientd$' /tmp/deb-contents.txt
+      - name: Run lintian (informational)
+        # lintian flags packaging policy issues. Not gating yet — the
+        # nfpm-generated .deb has a few standard tag classes we accept
+        # (no maintainer changelog, no copyright, etc.) since this
+        # is an engineering build, not a Debian-distro upload. Failure
+        # mode is logged for visibility, not enforced.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          deb=$(find dist -maxdepth 1 -name 'goat-client_*_amd64.deb' -print -quit)
+          lintian --no-tag-display-limit "$deb" || true
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goat-client-deb-amd64
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
   cosign:
     name: cosign sign archives
     # Tag-only: signing on every push wastes Sigstore log entries and
     # leaks confusing PR-time bundles. We sign exactly what we ship.
-    needs: [build-matrix, checksums]
+    needs: [build-gui-matrix, checksums]
     if: startsWith(github.ref, 'refs/tags/goat-client-v')
     runs-on: ubuntu-latest
     permissions:
@@ -217,10 +459,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download all artifacts
+      - name: Download GUI-matrix archives
         uses: actions/download-artifact@v4
         with:
+          pattern: goat-client-*
           path: artifacts
+      - name: Download SHA256SUMS
+        uses: actions/download-artifact@v4
+        with:
+          name: goat-client-checksums
+          path: artifacts/checksums
       - name: Stage release assets
         run: |
           set -euo pipefail
@@ -230,9 +478,10 @@ jobs:
             [ -d "$d" ] || continue
             base=$(basename "$d")
             [ "$base" = "goat-client-checksums" ] && continue
+            [ "$base" = "goat-client-deb-amd64" ] && continue
             cp "$d"/* release-assets/
           done
-          cp artifacts/goat-client-checksums/SHA256SUMS release-assets/SHA256SUMS
+          cp artifacts/checksums/SHA256SUMS release-assets/SHA256SUMS
           ls -la release-assets/
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -299,10 +548,9 @@ jobs:
             ## goat-client ${{ github.ref_name }}
 
             Six desktop targets, each shipped as a `.tar.gz` (Linux / macOS) or
-            `.zip` (Windows) carrying the `goat-clientd` system daemon. The
-            `goat-client` Fyne GUI is currently operator-built against the
-            host's CGO toolchain — Phase 2 of Track E will add a native-runner
-            matrix that bundles the GUI alongside the daemon.
+            `.zip` (Windows) carrying both the `goat-clientd` system daemon
+            and the `goat-client` Fyne desktop GUI. Built natively on each
+            platform's GitHub-hosted runner with `CGO_ENABLED=1`.
 
             ### Verifying
 
