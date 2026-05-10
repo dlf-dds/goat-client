@@ -44,9 +44,11 @@ Wall-clock budget: under 30s for the full class.
 
 Spawns the daemon, imports a real CBOR-+-Ed25519 bundle minted by the
 offline-CA workstation, brings the wg-cp0 outer tunnel up against a
-live endpoint in the goat sandbox lab, asserts handshake within the
-deadline. Skipped unless `GOAT_LAB_BUNDLE_PATH` *and*
-`GOAT_LAB_TRUST_ROOTS_PATH` are set.
+live endpoint baked into the bundle's `KnownEndpoints`, asserts
+handshake completion, then TCP-connects to a target IP through the
+tunnel to confirm data-plane reachability. Skipped unless all three of
+`GOAT_LAB_BUNDLE_PATH` + `GOAT_LAB_TRUST_ROOTS_PATH` +
+`GOAT_LAB_TARGET_IP` are set.
 
 Required env:
 
@@ -54,42 +56,58 @@ Required env:
 |---|---|
 | `GOAT_LAB_BUNDLE_PATH` | path to a CBOR-encoded offline-CA bundle valid for a wg-cp0 endpoint in the lab |
 | `GOAT_LAB_TRUST_ROOTS_PATH` | PEM file with the Ed25519 pubkey that signed the bundle |
+| `GOAT_LAB_TARGET_IP` | mesh IP of a probe peer reachable through the wg-cp0 tunnel; the test TCP-connects to confirm tunnel data-plane, not just handshake |
 
 Optional env:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `GOAT_LAB_TIMEOUT_SEC` | 30 | handshake deadline |
+| `GOAT_LAB_TIMEOUT_SEC` | 30 | handshake deadline (per attempt; the test retries once after 60s on first failure) |
+| `GOAT_LAB_PROBE_TIMEOUT_SEC` | 5 | TCP-probe timeout |
+| `GOAT_LAB_PROBE_PORT` | `80` | TCP probe port on `GOAT_LAB_TARGET_IP` |
+
+The test tags each error path `[phase=<import|connect|handshake|probe>]`
+so the workflow can surface which leg of the smoke broke.
 
 Run locally (assuming you have lab access):
 
 ```bash
 export GOAT_LAB_BUNDLE_PATH=/path/to/lab.bundle.cbor
 export GOAT_LAB_TRUST_ROOTS_PATH=/path/to/lab-trust-roots.pem
+export GOAT_LAB_TARGET_IP=198.18.0.11
 go test -tags realprotocol -count=1 -v ./tests/integration/...
 ```
 
 CI: [`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml)
-runs this nightly at 03:23 UTC and on PRs that touch `internal/tunnel/**`
-or `internal/bundle/**`. It decodes two repo secrets to temp files,
-exports the env vars above, and runs `go test -tags=realprotocol`. When
-those secrets are unset (e.g., before the operator wires the lab, or on
-fork PRs), the test self-skips and the workflow goes green.
+is `workflow_dispatch`-only during the prod-access validation window
+(2026-05-10 → 2026-05-17, sunset per #20). It decodes the three repo
+secrets to temp files / env, exports the env vars above, and runs
+`go test -tags=realprotocol`. When any secret is unset, the test
+self-skips and the workflow goes green. Schedule + path-filtered PR
+triggers re-introduce in a follow-up after the prod-access window
+closes and a dedicated lab listener replaces the prod relay.
 
 ## Lab-endpoint contract (operator-side)
 
 This section is for the operator standing the lab up — the test client
-side is already implemented. The goal is a single round-trip:
+side is already implemented. The goal is a two-stage round-trip:
 
 1. Daemon imports a CBOR bundle.
-2. Daemon brings up a wg-cp0 outer tunnel against an endpoint named in
-   the bundle.
+2. Daemon brings up a wg-cp0 outer tunnel against an endpoint baked
+   into the bundle's `KnownEndpoints`.
 3. The runner observes a non-zero `LastHandshake` within the deadline.
+4. The runner TCP-connects to `GOAT_LAB_TARGET_IP` (a probe peer's
+   mesh IP) through the wg-cp0 tunnel — confirms the data-plane works,
+   not just the handshake.
 
-That's all the test asserts. It does not exercise application traffic
-through the tunnel — handshake completion is the smoke. (Target-IP
-reachability through the tunnel can be added later without changing
-the lab's contract.)
+> **Validation-window posture.** Per #15 / #20 the listener for this
+> smoke is currently a **prod goat-relay** (reused, not a dedicated lab
+> machine), with a tightly-scoped bundle covering 2026-05-10 → 2026-05-17
+> plus a 7-day defense-in-depth buffer. The bundle's `CPDevicePrivkey`
+> sits in this repo's secrets — that's a deliberate cross-trust posture
+> with sunset on 2026-05-17. After sunset, a dedicated lab listener +
+> dev-CA-signed bundle replaces this arrangement and the workflow gets
+> its `schedule:` + path-filtered PR triggers back.
 
 ### What the lab must provide
 
@@ -111,32 +129,48 @@ in lock-step with goat-trunk's
 Use goat-trunk's offline-CA tooling at `ops/enrollment/`. The end-to-end
 runbook lives at goat-trunk's
 [`docs/operations/enrollment-bundle-runbook.md`](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/enrollment-bundle-runbook.md)
-— follow the dev-CA path for a lab smoke.
+— follow the **prod-CA** path during the validation window. (Operator
+points at the actual prod-CA artifact path; see PR description.)
 
-The fields the test cares about are the ones documented above. Set
-`ExpiresAt` generously (≥ 90 days) so the secret-rotation cadence isn't
-weekly. The activation deadline can be anything ≥ ExpiresAt — the test
-re-imports on every run, so activation isn't load-bearing.
+Time-boxed scope per #15 + #20:
+
+- `-ttl-days 14` — covers the 2026-05-10 → 2026-05-17 prod-access
+  window plus a 7-day defense-in-depth buffer. Bundle expires
+  automatically near sunset.
+- `-activation-days 14` — same horizon; the test re-imports every run
+  so activation isn't load-bearing, but matching keeps the bundle's
+  validity envelope coherent.
+- Dedicated mesh-IP from the free pool (`198.18.0.14`-`198.18.0.19`).
+- Single-purpose ACL group (e.g. `GOAT-CLIENT-SMOKE`).
+- `-update-allowlist` to append to
+  `ops/enrollment/wg-cp0-bundle-allowlist.json`, then push via Ansible
+  to the prod relays so the relay-side WG accepts the new pubkey.
 
 ### Wiring the secrets
 
-```bash
-# From the operator workstation, after a fresh bundle is minted:
+Three secrets, not two — the third (`LAB_TARGET_IP`) is the cartoon-
+peer probe IP the test TCP-connects to via the wg-cp0 tunnel:
 
-base64 -w0 < lab.bundle.cbor          > /tmp/LAB_BUNDLE_B64
-base64 -w0 < lab-trust-roots.pem      > /tmp/LAB_TRUST_ROOTS_B64
+```bash
+# From the operator workstation, after a fresh bundle is minted and
+# the allowlist push has completed:
+
+base64 < lab.bundle.cbor          > /tmp/LAB_BUNDLE_B64
+base64 < prod-ca-pubkey.pem       > /tmp/LAB_TRUST_ROOTS_B64
 
 # macOS: base64 has no -w; default is no wrapping, which is what we want.
-# If you accidentally use a wrapped base64, the workflow's
-# `base64 --decode` step still tolerates it on GNU coreutils.
+# GNU coreutils on Linux: pass -w0 if you want a single line; the
+# workflow's `base64 --decode` tolerates wrapped input either way.
 
-gh secret set LAB_BUNDLE_B64 < /tmp/LAB_BUNDLE_B64 \
-    --repo dlf-dds/goat-client
-gh secret set LAB_TRUST_ROOTS_B64 < /tmp/LAB_TRUST_ROOTS_B64 \
-    --repo dlf-dds/goat-client
+gh secret set LAB_BUNDLE_B64       --repo dlf-dds/goat-client < /tmp/LAB_BUNDLE_B64
+gh secret set LAB_TRUST_ROOTS_B64  --repo dlf-dds/goat-client < /tmp/LAB_TRUST_ROOTS_B64
+
+# LAB_TARGET_IP is a plain string — operator picks one of the cartoon-
+# peer mesh IPs (e.g. 198.18.0.11) that has a probe listener up.
+echo -n "198.18.0.11" | gh secret set LAB_TARGET_IP --repo dlf-dds/goat-client
 ```
 
-Trigger a confirmation run before relying on the schedule:
+Trigger a confirmation run:
 
 ```bash
 gh workflow run nightly-realprotocol --repo dlf-dds/goat-client
@@ -145,28 +179,31 @@ gh run watch --repo dlf-dds/goat-client
 
 ### Rotation
 
-Bundle expired (`ExpiresAt` past) → re-mint, `gh secret set LAB_BUNDLE_B64`.
-Trust-root rotation → re-set both secrets in the same operation; the
-trust-roots package supports overlap windows so a step-wise rotation
-without nightly downtime is possible if needed.
+During the validation window, expected lifecycle is single-shot:
+mint → push → fire workflow once → green run captured → PR merges.
+If the bundle expires before sunset (shouldn't happen with 14d TTL but
+can if the window slips), re-mint with the same flags and re-set
+`LAB_BUNDLE_B64`. `LAB_TRUST_ROOTS_B64` only changes if the CA itself
+rotates. `LAB_TARGET_IP` only changes if the cartoon-peer cohort
+shifts.
 
 ### Failure-mode triage
 
 The workflow opens (or comments on) a `nightly-realprotocol-failure`
-issue on each red scheduled / dispatched run, with a checklist of likely
-causes. Most common, in observed order:
+issue on each red `workflow_dispatch` run. The run's job summary
+surfaces the `[phase=...]` tag from the test log so triage starts at
+the right leg:
 
-1. Bundle expired — `bundle.ErrExpired` in the test log.
-2. Lab endpoint unreachable — `connect to lab wg-cp0` step times out
-   waiting for handshake.
-3. Drift in `internal/tunnel/**` or `internal/bundle/**` since the
-   bundle was minted (e.g., schema bump) — `importBundle` returns a
-   parse error.
-4. `LAB_TRUST_ROOTS_B64` mismatch with the CA that signed the bundle
-   — `signature invalid` in the import error.
+| Phase | Most common causes |
+|---|---|
+| `import` | Bundle expired (`bundle.ErrExpired`); CA mismatch (`LAB_TRUST_ROOTS_B64` doesn't match signing CA); schema drift in `internal/bundle/**` since mint. |
+| `connect` | Daemon-internal — IPC socket setup, daemon process exit. Usually env / build issue, not lab-side. |
+| `handshake` | Allowlist push to relay didn't run; relay-side WG pubkey mismatch; UDP egress from runner blocked; relay endpoint listed first in the bundle is unreachable. |
+| `probe` | Handshake OK but TCP-connect to `LAB_TARGET_IP` failed — cartoon-peer probe listener not up; relay-side `AllowedIPs` doesn't route the mesh subnet to the probe peer; peer-side firewall. |
 
-Recovery is the same as the initial wiring: re-mint and `gh secret set`.
-The next green scheduled run auto-closes the tracking issue.
+Recovery is the same as the initial wiring path: re-mint where needed
+and `gh secret set`. The next green `workflow_dispatch` run
+auto-closes the tracking issue.
 
 ## Sibling pattern
 

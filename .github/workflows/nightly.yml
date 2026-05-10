@@ -5,44 +5,43 @@ name: nightly-realprotocol
 # contract, always-runs) and ci.yml (always-fast vet/test/build). This
 # is the Tier-B job: live network, requires lab credentials.
 #
-# Triggers:
-#   - schedule: 03:23 UTC nightly (off-peak; asymmetric minute so it
-#     doesn't pile up with other :00 nightly jobs)
-#   - pull_request: when a PR touches tunnel- or bundle-package code
-#     (so a regression in those packages can't silently land before
-#     the next nightly)
-#   - workflow_dispatch: operator-fired re-run after wiring secrets or
-#     debugging the lab endpoint
+# Triggers (validation-window posture, per #15 + #20):
+#   - workflow_dispatch only. Schedule + path-filtered PR triggers are
+#     intentionally absent during the prod-access window
+#     (2026-05-10 → 2026-05-17, sunset per #20). Re-introduce schedule +
+#     PR coverage in a follow-up once cartoon-peer probe endpoints +
+#     secrets are landed.
 #
 # Required repo secrets (operator-provisioned; see
 # tests/integration/README.md for the lab-endpoint contract):
 #
 #   LAB_BUNDLE_B64        base64-encoded CBOR EnrollmentBundle, signed
-#                         by the lab offline-CA, valid for a wg-cp0
+#                         by the prod offline-CA, valid for a wg-cp0
 #                         endpoint reachable from GitHub-hosted runners
 #   LAB_TRUST_ROOTS_B64   base64-encoded PEM with the Ed25519 pubkey
-#                         that signed the bundle
+#                         that signed the bundle (prod CA pubkey)
+#   LAB_TARGET_IP         mesh IP of a cartoon-peer probe endpoint
+#                         reachable through the wg-cp0 tunnel; the
+#                         test TCP-connects to confirm tunnel data-plane
+#                         reachability, not just handshake completion
 #
-# When either secret is unset (e.g., a fork PR, or before the operator
-# wires the lab), the test self-skips (see realprotocol_test.go) and
-# the job goes green — same behavior as integration.yml's compile-and-
-# skip realprotocol step.
+# When any of the three is unset, the test self-skips (see
+# realprotocol_test.go) and the job goes green.
 #
 # Failure notification: a tracking issue labeled
-# `nightly-realprotocol-failure` is opened on first failure and
-# updated with each subsequent failure run. The next green run closes
-# it. PR runs do NOT touch the issue tracker — they surface in the PR
-# check list directly.
+# `nightly-realprotocol-failure` is opened on first failure of a
+# workflow_dispatch run and updated with each subsequent failure run;
+# the next green run closes it.
+#
+# Failure-signal discrimination (per #15):
+#   - Test tags each error path `[phase=<import|connect|handshake|probe>]`.
+#   - Test retries once after 60s on first failure (gives the daemon a
+#     chance to cycle through additional bundle KnownEndpoints if the
+#     first selection was unreachable).
+#   - The "phase summary" step extracts the latest [phase=...] tag from
+#     the test log and writes it to $GITHUB_STEP_SUMMARY.
 
 on:
-  schedule:
-    - cron: "23 3 * * *"
-  pull_request:
-    paths:
-      - "internal/tunnel/**"
-      - "internal/bundle/**"
-      - "tests/integration/**"
-      - ".github/workflows/nightly.yml"
   workflow_dispatch:
 
 permissions:
@@ -50,8 +49,6 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Don't cancel an in-flight nightly when a PR push lands on the same
-  # ref bucket; the live-network run is more expensive than waiting.
   cancel-in-progress: false
 
 jobs:
@@ -73,35 +70,77 @@ jobs:
         env:
           LAB_BUNDLE_B64: ${{ secrets.LAB_BUNDLE_B64 }}
           LAB_TRUST_ROOTS_B64: ${{ secrets.LAB_TRUST_ROOTS_B64 }}
+          LAB_TARGET_IP: ${{ secrets.LAB_TARGET_IP }}
         run: |
           set -euo pipefail
-          if [[ -z "${LAB_BUNDLE_B64:-}" || -z "${LAB_TRUST_ROOTS_B64:-}" ]]; then
-            echo "::notice::LAB_BUNDLE_B64 / LAB_TRUST_ROOTS_B64 not configured; realprotocol test will self-skip"
-            echo "bundle_path=" >> "$GITHUB_OUTPUT"
-            echo "trust_path=" >> "$GITHUB_OUTPUT"
+          if [[ -z "${LAB_BUNDLE_B64:-}" || -z "${LAB_TRUST_ROOTS_B64:-}" || -z "${LAB_TARGET_IP:-}" ]]; then
+            echo "::notice::LAB_BUNDLE_B64 / LAB_TRUST_ROOTS_B64 / LAB_TARGET_IP not all configured; realprotocol test will self-skip"
+            {
+              echo "bundle_path="
+              echo "trust_path="
+              echo "target_ip="
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           tmp="$(mktemp -d)"
           printf '%s' "$LAB_BUNDLE_B64" | base64 --decode > "$tmp/bundle.cbor"
           printf '%s' "$LAB_TRUST_ROOTS_B64" | base64 --decode > "$tmp/trust-roots.pem"
           chmod 0600 "$tmp/bundle.cbor" "$tmp/trust-roots.pem"
-          echo "bundle_path=$tmp/bundle.cbor" >> "$GITHUB_OUTPUT"
-          echo "trust_path=$tmp/trust-roots.pem" >> "$GITHUB_OUTPUT"
+          {
+            echo "bundle_path=$tmp/bundle.cbor"
+            echo "trust_path=$tmp/trust-roots.pem"
+            echo "target_ip=$LAB_TARGET_IP"
+          } >> "$GITHUB_OUTPUT"
 
       - name: go test -tags=realprotocol
+        id: gotest
         env:
           GOAT_LAB_BUNDLE_PATH: ${{ steps.stage.outputs.bundle_path }}
           GOAT_LAB_TRUST_ROOTS_PATH: ${{ steps.stage.outputs.trust_path }}
+          GOAT_LAB_TARGET_IP: ${{ steps.stage.outputs.target_ip }}
           # CGO disabled to match Track A's daemon build; the test
           # harness rebuilds cmd/goat-clientd on the runner.
           CGO_ENABLED: "0"
         run: |
-          go test -tags=realprotocol -count=1 -v -timeout 5m ./tests/integration/...
+          set -o pipefail
+          go test -tags=realprotocol -count=1 -v -timeout 8m ./tests/integration/... 2>&1 | tee /tmp/realprotocol.log
+
+      - name: Phase summary
+        if: ${{ always() }}
+        env:
+          STAGE_BUNDLE_PATH: ${{ steps.stage.outputs.bundle_path }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## realprotocol smoke"
+            echo ""
+            if [[ -z "${STAGE_BUNDLE_PATH:-}" ]]; then
+              echo "Result: **skipped** (one or more required secrets unset)."
+              exit 0
+            fi
+            outcome="${{ steps.gotest.outcome }}"
+            echo "Result: **$outcome**"
+            echo ""
+            if [[ -f /tmp/realprotocol.log ]]; then
+              # Last [phase=...] tag in the log identifies which leg broke
+              # (or the last successful phase, if the run was green).
+              phase="$(grep -oE '\[phase=[a-z]+\]' /tmp/realprotocol.log | tail -1 | tr -d '[]' | cut -d= -f2 || true)"
+              if [[ -n "$phase" ]]; then
+                echo "Last phase tag: \`$phase\`"
+                echo ""
+              fi
+              echo "Phase guide:"
+              echo "- \`import\` — bundle parse / signature verify; usually CA mismatch or expired bundle."
+              echo "- \`connect\` — IPC Connect to daemon; daemon-internal."
+              echo "- \`handshake\` — wg handshake didn't complete in time; endpoint unreachable, allowlist not pushed to relay, pubkey mismatch, or NAT/UDP-egress issue from runner."
+              echo "- \`probe\` — handshake OK but TCP-connect to LAB_TARGET_IP via wg-cp0 failed; routing, AllowedIPs, or peer-side listener missing."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   notify-failure:
     name: open or update failure issue
     needs: realprotocol-smoke
-    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ failure() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -134,20 +173,12 @@ jobs:
           - First observed: $ts (run #$RUN_NUMBER)
           - Run: $RUN_URL
 
+          Check the run's job summary for the \`[phase=...]\` tag — it
+          identifies which leg of the smoke broke. Triage starts there.
+
           While this issue is open, each subsequent failure will append a
-          comment here. The next green run on \`schedule\` or
-          \`workflow_dispatch\` will close this issue automatically.
-
-          Likely causes (in priority order):
-
-          1. Lab \`wg-cp0\` endpoint unreachable / down — verify with
-             \`curl\` or \`wg show\` from the operator workstation.
-          2. \`LAB_BUNDLE_B64\` secret expired (bundles are time-bounded;
-             \`expires_at\` field in the CBOR). Re-mint and rotate.
-          3. Drift in \`internal/tunnel/**\` or \`internal/bundle/**\`
-             since the bundle was minted (e.g., schema bump).
-          4. Trust-root key rotation: \`LAB_TRUST_ROOTS_B64\` no longer
-             matches the signing key.
+          comment here. The next green run on \`workflow_dispatch\` will
+          close this issue automatically.
 
           See \`tests/integration/README.md\` for the lab-endpoint
           contract and the secret-rotation runbook.
@@ -162,7 +193,7 @@ jobs:
   notify-recovery:
     name: close failure issue on green
     needs: realprotocol-smoke
-    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ success() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
