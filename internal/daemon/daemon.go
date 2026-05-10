@@ -286,6 +286,20 @@ func (d *Daemon) Connect(ctx context.Context) error {
 		d.mu.Unlock()
 		return err
 	}
+
+	// Tunnel is up — apply per-OS host-DNS configuration so internal
+	// hostnames resolve through the wg-cp0 resolver. Failure here is
+	// non-fatal: log and continue. Operators can still use raw IPs while
+	// host DNS sorts itself out, and Restore on disconnect is idempotent.
+	dnsCfg := tunneldns.Config{
+		Nameservers:   cfg.DNSServers,
+		SearchDomains: cfg.SearchDomains,
+		MatchDomains:  cfg.MatchDomains,
+	}
+	if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
+		d.logf("dns adapter apply failed (non-fatal): %v", err)
+	}
+
 	d.mu.Lock()
 	d.lastConnect = time.Now()
 	d.lastErr = nil
@@ -296,6 +310,11 @@ func (d *Daemon) Connect(ctx context.Context) error {
 
 // Disconnect takes the tunnel down.
 func (d *Daemon) Disconnect(ctx context.Context) error {
+	// Tear DNS down before the tunnel — the host should stop trying to use
+	// the wg-cp0 resolver before the route to it disappears.
+	if err := d.dnsAdapter.Restore(ctx); err != nil {
+		d.logf("dns adapter restore failed (non-fatal): %v", err)
+	}
 	if err := d.manager.Disconnect(ctx); err != nil {
 		return err
 	}
