@@ -159,25 +159,31 @@ func (p *bundlePane) apply() {
 	p.applyButton.Disable()
 	p.pickButton.Disable()
 	go func() {
-		defer p.pickButton.Enable()
+		// All UI mutations below run on the import goroutine and must
+		// marshal back to the Fyne main goroutine via fyne.Do (F-108).
+		defer fyne.Do(func() { p.pickButton.Enable() })
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		info, err := p.client.ImportBundle(ctx, p.currentRaw)
 		if err != nil {
-			if p.window != nil {
-				dialog.ShowError(fmt.Errorf("daemon rejected bundle: %w", err), p.window)
-			}
-			p.applyButton.Enable()
+			fyne.Do(func() {
+				if p.window != nil {
+					dialog.ShowError(fmt.Errorf("daemon rejected bundle: %w", err), p.window)
+				}
+				p.applyButton.Enable()
+			})
 			return
 		}
-		p.currentLabel.SetText(formatBundleCurrent(info))
-		p.previewLabel.SetText("")
-		p.currentRaw = nil
-		p.current = nil
-		p.currentPath = ""
-		if p.onApplied != nil {
-			p.onApplied(info)
-		}
+		fyne.Do(func() {
+			p.currentLabel.SetText(formatBundleCurrent(info))
+			p.previewLabel.SetText("")
+			p.currentRaw = nil
+			p.current = nil
+			p.currentPath = ""
+			if p.onApplied != nil {
+				p.onApplied(info)
+			}
+		})
 	}()
 }
 
