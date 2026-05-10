@@ -468,16 +468,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download GUI-matrix archives
+      - name: Download GUI-matrix archives + checksums
+        # The pattern matches goat-client-{linux,darwin,windows}-{amd64,arm64}
+        # archives AND goat-client-checksums (SHA256SUMS) in one call. It
+        # also matches goat-client-deb-amd64 if package-deb-smoke happens
+        # to finish before cosign starts; the staging step filters that
+        # plus the checksum dir out of the asset set we sign.
         uses: actions/download-artifact@v4
         with:
           pattern: goat-client-*
           path: artifacts
-      - name: Download SHA256SUMS
-        uses: actions/download-artifact@v4
-        with:
-          name: goat-client-checksums
-          path: artifacts/checksums
       - name: Stage release assets
         run: |
           set -euo pipefail
@@ -486,11 +486,12 @@ jobs:
           for d in artifacts/goat-client-*; do
             [ -d "$d" ] || continue
             base=$(basename "$d")
+            # checksums + deb are not part of the cosign-signed asset set.
             [ "$base" = "goat-client-checksums" ] && continue
             [ "$base" = "goat-client-deb-amd64" ] && continue
             cp "$d"/* release-assets/
           done
-          cp artifacts/checksums/SHA256SUMS release-assets/SHA256SUMS
+          cp artifacts/goat-client-checksums/SHA256SUMS release-assets/SHA256SUMS
           ls -la release-assets/
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
