@@ -7,6 +7,7 @@ require (
 	fyne.io/systray v1.12.1
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/fxamacker/cbor/v2 v2.9.2
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/mobile v0.0.0-20260508232728-bebd421c7fa8
 	golang.org/x/sys v0.44.0
@@ -28,7 +29,6 @@ require (
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20240506104042-037f3cc74f2a // indirect
 	github.com/go-text/render v0.2.0 // indirect
 	github.com/go-text/typesetting v0.3.3 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/hack-pad/go-indexeddb v0.3.2 // indirect
 	github.com/hack-pad/safejs v0.1.0 // indirect
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade // indirect

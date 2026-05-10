@@ -67,6 +67,28 @@ type Config struct {
 	// ListenPort is the local UDP port the WG userspace device binds.
 	// Zero means OS-assigned ephemeral.
 	ListenPort uint16
+
+	// DNSServers is the optional list of resolvers reachable via the wg-cp0
+	// tunnel — typically the mgmt-host's mesh address. The daemon hands
+	// these to the per-OS host-DNS adapter (internal/tunnel/dns) when
+	// bringing the tunnel up so internal hostnames resolve through the
+	// tunnel. Empty means "leave host DNS alone."
+	//
+	// Note: until the bundle schema carries explicit nameservers + search
+	// domains, FromBundle leaves this empty. Operators can populate it
+	// out-of-band via daemon config; the next bundle-schema rev will fill
+	// it from KnownEndpoints with Kind=mgmt + a new dns_servers field.
+	DNSServers []netip.Addr
+
+	// SearchDomains is the optional list of DNS suffixes routed through
+	// DNSServers. Same plumbing path as DNSServers; same caveat about
+	// bundle-schema follow-up.
+	SearchDomains []string
+
+	// MatchDomains is the (optional) split-DNS subset — only queries whose
+	// name ends in one of these domains are routed through DNSServers.
+	// Empty means SearchDomains also serves as the match list.
+	MatchDomains []string
 }
 
 // PeerConfig is the wg-cp0 remote endpoint.
@@ -156,6 +178,16 @@ func (m *Manager) State() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state
+}
+
+// Config returns a snapshot of the persisted Config. Used by the daemon to
+// read DNSServers / SearchDomains / MatchDomains after Configure so the
+// host-DNS adapter can be driven from the same source of truth as the
+// wireguard-go device.
+func (m *Manager) Config() Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg
 }
 
 // LastError returns the most recent error encountered, or nil. Cleared by

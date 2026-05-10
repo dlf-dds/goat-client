@@ -69,11 +69,3 @@ func New() (Adapter, error) {
 
 // ErrNotImplemented is returned by stub adapter methods.
 var ErrNotImplemented = errors.New("dns: not implemented on this platform")
-
-// noopAdapter is the safe Phase 1 default — applies nothing, restores
-// nothing. The daemon logs a warning when DNS config is non-empty but the
-// adapter is no-op.
-type noopAdapter struct{}
-
-func (noopAdapter) Apply(context.Context, string, Config) error { return nil }
-func (noopAdapter) Restore(context.Context) error               { return nil }

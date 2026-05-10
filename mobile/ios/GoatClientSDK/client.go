@@ -9,17 +9,17 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/trustanchor"
+	"github.com/dlf-dds/goat-client/internal/tunnel"
 )
 
-// ErrTrackANotYetWired is returned by tunnel-affecting methods until Track A
-// (internal/tunnel + internal/bundle) lands. The Swift shell can render this
-// gracefully ("daemon backend not yet integrated") so engineering can iterate
-// on the UI + xcframework build pipeline before the Go tunnel core is ready.
-var ErrTrackANotYetWired = errors.New("goat-client iOS SDK: tunnel backend not yet wired (Track A pending)")
-
 // ErrNoBundleImported is returned by Run() if ImportBundle hasn't yet been
-// called successfully. The bundle carries the wg-cp0 peer pubkey + endpoints
-// + assigned tunnel address; without it the daemon has no config to apply.
+// called successfully and no persisted bundle is on disk. The bundle carries
+// the wg-cp0 peer pubkey + endpoints + assigned tunnel address; without it
+// the SDK has no config to apply.
 var ErrNoBundleImported = errors.New("goat-client iOS SDK: no bundle imported (call ImportBundle first)")
 
 // TunnelState mirrors the (very narrow) tunnel status surface exposed to
@@ -49,16 +49,15 @@ type Client struct {
 	networkChangeListener NetworkChangeListener
 	dnsManager            DnsManager
 
-	mu             sync.Mutex
-	ctxCancel      context.CancelFunc
-	bundleImported atomic.Bool
-	stateAtomic    atomic.Value // string — current StateXxx
+	mu          sync.Mutex
+	ctxCancel   context.CancelFunc
+	stateAtomic atomic.Value // string — current StateXxx
 }
 
 // NewClient is gomobile-callable. cfgDir is typically the App Group container
 // shared between the main app (which calls ImportBundle) and the NE extension
-// (which calls Run). stateFile is a JSON file Track A's tunnel will read/write
-// for last-handshake / bytes counters.
+// (which calls Run). stateFile is a JSON file the engine reads/writes for
+// last-handshake / bytes counters.
 //
 // networkChangeListener and dnsManager are Swift-implemented (see listeners.go).
 // Both may be nil for unit-style smoke tests; production callers should wire
@@ -87,41 +86,58 @@ func NewClient(
 
 // ImportBundle takes the raw bytes of an offline-CA-signed CBOR bundle (see
 // docs/design/offline-enrollment.md and goat-trunk's
-// ops/enrollment/cmd/bundle-extract for the format) and persists the parsed
-// config under cfgDir.
+// ops/enrollment/cmd/bundle-extract for the format), parses it, verifies the
+// Ed25519 signature against the build-time-pinned trust anchors
+// (internal/trustanchor.Default), and persists the raw bytes under cfgDir for
+// Run() to re-load.
 //
 // gomobile cannot bind a Go []byte parameter directly — it gets bridged to
 // Swift Data / NSData. Swift callers pass the raw bundle file contents read
 // via UIDocumentPicker (file-picker import) or AVFoundation (QR scan + base64
 // decode).
-//
-// Wiring: once internal/bundle (Track A) lands, this dispatches to
-// bundle.ParseAndVerify(bundleBytes) and persists. Until then it validates
-// shape (non-empty + minimum size) and stashes the raw bytes for Run().
 func (c *Client) ImportBundle(bundleBytes []byte) error {
 	if len(bundleBytes) == 0 {
 		return fmt.Errorf("empty bundle")
-	}
-	if len(bundleBytes) < 64 {
-		// CBOR header + Ed25519 signature (64 bytes) alone is well over 64
-		// bytes; anything smaller is definitely garbage.
-		return fmt.Errorf("bundle too small (%d bytes); not a valid CBOR-signed bundle", len(bundleBytes))
 	}
 	if c.cfgDir == "" {
 		return fmt.Errorf("client cfgDir not configured (NewClient called with empty cfgDir)")
 	}
 
-	// Persist for Run() to pick up. Track A's bundle.ParseAndVerify will
-	// replace this raw write with verified-then-persisted-config; for now we
-	// just stash the bytes so the round-trip is exercised end-to-end.
+	parsed, err := bundle.Unmarshal(bundleBytes)
+	if err != nil {
+		return fmt.Errorf("parse bundle: %w", err)
+	}
+	signable, err := parsed.Signable()
+	if err != nil {
+		return fmt.Errorf("rebuild signable: %w", err)
+	}
+	if _, err := trustanchor.Default().Verify(parsed.Signature, signable); err != nil {
+		return fmt.Errorf("verify bundle: %w", err)
+	}
+	now := time.Now()
+	if err := parsed.CheckExpiry(now); err != nil {
+		return err
+	}
+	if err := parsed.CheckCPDeviceKeypair(); err != nil {
+		return err
+	}
+
+	// Persist verified bytes for Run() to pick up. Raw form (not the parsed
+	// struct) keeps the round-trip stable: a future Run() can re-verify
+	// against the same signable bytes that just verified here, so a trust
+	// anchor rotation between Import and Run is a clean revoke.
 	bundlePath := c.cfgDir + "/bundle.cbor"
 	if err := os.MkdirAll(c.cfgDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir cfgDir: %w", err)
 	}
-	if err := os.WriteFile(bundlePath, bundleBytes, 0o600); err != nil {
+	tmp := bundlePath + ".tmp"
+	if err := os.WriteFile(tmp, bundleBytes, 0o600); err != nil {
 		return fmt.Errorf("write bundle: %w", err)
 	}
-	c.bundleImported.Store(true)
+	if err := os.Rename(tmp, bundlePath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename bundle: %w", err)
+	}
 	return nil
 }
 
@@ -138,19 +154,45 @@ func (c *Client) ImportBundle(bundleBytes []byte) error {
 //
 // envList: optional env-var bag pre-applied to os.Setenv before tunnel start.
 // May be nil.
-//
-// Currently a stub that records connecting->error transition and returns
-// ErrTrackANotYetWired. Once Track A lands tunnel.RunOniOS, the wiring drops
-// in here.
 func (c *Client) Run(fd int32, interfaceName string, envList *EnvList) error {
-	if !c.bundleImported.Load() {
-		// Permit Run() if a bundle was previously persisted to cfgDir
-		// (e.g. main app imported, then process restarted, NE extension is
-		// running fresh).
-		if _, err := os.Stat(c.cfgDir + "/bundle.cbor"); err != nil {
-			c.stateAtomic.Store(StateError)
+	applyEnv(envList)
+	c.stateAtomic.Store(StateConnecting)
+
+	bundlePath := c.cfgDir + "/bundle.cbor"
+	raw, err := os.ReadFile(bundlePath)
+	if err != nil {
+		c.stateAtomic.Store(StateError)
+		if os.IsNotExist(err) {
 			return ErrNoBundleImported
 		}
+		return fmt.Errorf("read bundle: %w", err)
+	}
+	parsed, err := bundle.Unmarshal(raw)
+	if err != nil {
+		c.stateAtomic.Store(StateError)
+		return fmt.Errorf("parse bundle: %w", err)
+	}
+	signable, err := parsed.Signable()
+	if err != nil {
+		c.stateAtomic.Store(StateError)
+		return fmt.Errorf("rebuild signable: %w", err)
+	}
+	if _, err := trustanchor.Default().Verify(parsed.Signature, signable); err != nil {
+		c.stateAtomic.Store(StateError)
+		return fmt.Errorf("verify bundle: %w", err)
+	}
+	if err := parsed.CheckExpiry(time.Now()); err != nil {
+		c.stateAtomic.Store(StateError)
+		return err
+	}
+
+	cfg, err := tunnel.FromBundle(parsed)
+	if err != nil {
+		c.stateAtomic.Store(StateError)
+		return fmt.Errorf("derive tunnel config: %w", err)
+	}
+	if interfaceName != "" {
+		cfg.InterfaceName = interfaceName
 	}
 
 	c.mu.Lock()
@@ -159,19 +201,18 @@ func (c *Client) Run(fd int32, interfaceName string, envList *EnvList) error {
 	c.mu.Unlock()
 	defer cancel()
 
-	applyEnv(envList)
-	c.stateAtomic.Store(StateConnecting)
-
-	// TODO(track-a): replace with tunnel.RunOniOS(ctx, fd, interfaceName,
-	// c.cfgDir, c.networkChangeListener, c.dnsManager). The signatures here
-	// are designed to drop in cleanly: ctx for cancellation, fd for the utun
-	// bridge (per netbird device_ios.go), the listener interfaces for
-	// path-monitor + NEDNSSettings.
-	_ = ctx
-	_ = fd
-	_ = interfaceName
-	c.stateAtomic.Store(StateError)
-	return ErrTrackANotYetWired
+	// Optimistic connected: tunnel.RunOnMobile only returns on Stop or a
+	// fatal device error, so flipping to Connected before blocking gives
+	// the Swift UI a usable signal. Real handshake-watching is a follow-up
+	// (it would tail Stats() through a goroutine; out of scope here).
+	c.stateAtomic.Store(StateConnected)
+	runErr := tunnel.RunOnMobile(ctx, int(fd), cfg.InterfaceName, &cfg, nil)
+	if runErr != nil {
+		c.stateAtomic.Store(StateError)
+		return runErr
+	}
+	c.stateAtomic.Store(StateDisconnected)
+	return nil
 }
 
 // Stop signals the running tunnel to wind down. Idempotent — safe to call

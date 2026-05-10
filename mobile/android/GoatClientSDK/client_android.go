@@ -7,10 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/trustanchor"
+	"github.com/dlf-dds/goat-client/internal/tunnel"
 )
 
 // Connection states surfaced by GetTunnelStatus(). Constants are exported
@@ -72,17 +78,15 @@ func NewClient(androidSDKVersion int, deviceName string, uiVersion string, tunAd
 }
 
 // ImportBundle accepts the raw bytes of an offline-CA-signed CBOR bundle
-// (per goat-trunk docs/design/offline-enrollment.md) and persists them to
-// the configured ConfigurationFilePath. Bundle parse + Ed25519 verify
-// against the pinned offline-CA root happens here once internal/bundle
-// (Track A) lands its parser; for now the bytes are persisted as-is so
-// the Kotlin shell's UX path (file picker -> apply -> connect) can be
-// driven end-to-end against the persisted-bytes invariant.
+// (per goat-trunk docs/design/offline-enrollment.md), parses it, verifies
+// the Ed25519 signature against the build-time-pinned trust anchors
+// (internal/trustanchor.Default), and persists the raw bytes at the
+// configured ConfigurationFilePath for Run() to re-load.
 //
 // Returns an error on:
 //   - empty input (caller should verify file/QR payload before calling)
+//   - bundle parse / signature verify failure
 //   - filesystem write failure (Android sandbox / disk full)
-//   - bundle signature verify failure (once Track A wires it)
 func (c *Client) ImportBundle(bundleBytes []byte) error {
 	if len(bundleBytes) == 0 {
 		return errors.New("import bundle: empty payload")
@@ -92,12 +96,31 @@ func (c *Client) ImportBundle(bundleBytes []byte) error {
 	c.mu.Unlock()
 
 	if files == nil {
-		return errors.New("import bundle: PlatformFiles not yet attached; call Run() first or supply files via Configure()")
+		return errors.New("import bundle: PlatformFiles not yet attached; call Configure() first")
 	}
 
 	cfgPath := files.ConfigurationFilePath()
 	if cfgPath == "" {
 		return errors.New("import bundle: PlatformFiles.ConfigurationFilePath() returned empty")
+	}
+
+	parsed, err := bundle.Unmarshal(bundleBytes)
+	if err != nil {
+		return fmt.Errorf("import bundle: parse: %w", err)
+	}
+	signable, err := parsed.Signable()
+	if err != nil {
+		return fmt.Errorf("import bundle: rebuild signable: %w", err)
+	}
+	if _, err := trustanchor.Default().Verify(parsed.Signature, signable); err != nil {
+		return fmt.Errorf("import bundle: verify: %w", err)
+	}
+	now := time.Now()
+	if err := parsed.CheckExpiry(now); err != nil {
+		return err
+	}
+	if err := parsed.CheckCPDeviceKeypair(); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
@@ -111,12 +134,6 @@ func (c *Client) ImportBundle(bundleBytes []byte) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("import bundle: rename: %w", err)
 	}
-
-	// TODO(track-A-internal-bundle): once internal/bundle lands its
-	// parser, replace this with: parsed, err := bundle.Parse(bundleBytes);
-	// if err != nil { return err }; reject if signature verify fails;
-	// extract and surface issued-to / site / expires / peer-pubkey via
-	// the GetTunnelStatus() JSON for the Kotlin UI.
 
 	sum := bundleChecksum(bundleBytes)
 	c.mu.Lock()
@@ -150,15 +167,10 @@ func (c *Client) Configure(files PlatformFiles) {
 //   - dnsReadyListener: fires when DNS is in effect
 //   - envList: tunable env vars (force-relay et al)
 //
-// The engine wires net.SetAndroidProtectSocketFn(tunAdapter.ProtectSocket)
-// during NewClient, so socket protection is live before this call.
-//
-// TODO(track-A-internal-tunnel): once internal/tunnel lands the
-// single-peer wg-cp0 engine, this method calls into it with the
-// imported bundle's peer-pubkey + endpoints. Today it returns a
-// "not yet wired" error so the Kotlin shell can light up the UI
-// flow against the persisted-bundle invariant without depending on
-// Track A's mid-flight state.
+// The engine wires the underlying ProtectSocket bridge during NewClient
+// (setAndroidProtectSocketFn). Plumbing through wireguard-go's outer UDP
+// socket is the next iteration; see protect_android.go for the SDK-side
+// half.
 func (c *Client) Run(files PlatformFiles, dns *DNSList, dnsReadyListener DnsReadyListener, envList *EnvList) error {
 	c.mu.Lock()
 	c.files = files
@@ -168,31 +180,69 @@ func (c *Client) Run(files PlatformFiles, dns *DNSList, dnsReadyListener DnsRead
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctxCancel = cancel
 	c.mu.Unlock()
+	defer cancel()
 
 	exportEnv(envList)
 
-	if err := c.assertBundlePresent(); err != nil {
+	cfgPath, parsed, err := c.loadVerifiedBundle()
+	if err != nil {
+		c.fail(err.Error())
+		return err
+	}
+	_ = cfgPath // retained for future audit logging
+
+	cfg, err := tunnel.FromBundle(parsed)
+	if err != nil {
+		c.fail(err.Error())
+		return fmt.Errorf("derive tunnel config: %w", err)
+	}
+
+	dnsAddrs := dnsListSnapshot(dns)
+	dnsCSV := joinDNSAddrs(dnsAddrs)
+	routesCSV := joinAllowedIPs(cfg.Peer.AllowedIPs)
+
+	fd, err := c.tunAdapter.ConfigureInterface(
+		cfg.LocalAddress.String(),
+		int(cfg.MTU),
+		dnsCSV,
+		"",
+		routesCSV,
+	)
+	if err != nil {
+		c.fail(err.Error())
+		return fmt.Errorf("VpnService configure: %w", err)
+	}
+	if fd < 0 {
+		err := fmt.Errorf("VpnService returned invalid fd %d", fd)
 		c.fail(err.Error())
 		return err
 	}
 
-	// TODO(track-A): hand off to internal/tunnel.Engine{}.Run(ctx, ...)
-	// passing tunAdapter, iFaceDiscover, networkChangeListener, dns,
-	// dnsReadyListener, files, and the parsed bundle. The engine call
-	// is blocking; on return, transition to StateDisconnected and
-	// return the error (or nil if ctx was cancelled by Stop).
-	err := errors.New("wg-cp0 tunnel engine not yet integrated; depends on Track A internal/tunnel converging")
-	c.fail(err.Error())
+	if dnsReadyListener != nil {
+		dnsReadyListener.OnReady()
+	}
 
-	// Park here until Stop() so the Kotlin foreground service stays
-	// alive; otherwise VpnService would be torn down immediately. Once
-	// internal/tunnel lands this <- waits on the engine instead.
-	<-ctx.Done()
+	// Optimistic connected: tunnel.RunOnMobile only returns on Stop or a
+	// fatal device error, so flipping to Connected before blocking gives
+	// the Kotlin UI a usable signal. Real handshake-watching is a follow-up
+	// (would tail Stats() through a goroutine; out of scope here).
 	c.mu.Lock()
-	c.state = StateDisconnected
+	c.state = StateConnected
 	c.since = time.Now()
 	c.mu.Unlock()
-	return err
+
+	runErr := tunnel.RunOnMobile(ctx, fd, cfg.InterfaceName, &cfg, dnsAddrs)
+
+	c.mu.Lock()
+	if runErr != nil {
+		c.state = StateError
+		c.reason = runErr.Error()
+	} else {
+		c.state = StateDisconnected
+	}
+	c.since = time.Now()
+	c.mu.Unlock()
+	return runErr
 }
 
 // Stop signals the engine to tear down the tunnel. Safe to call
@@ -209,14 +259,13 @@ func (c *Client) Stop() {
 
 // RenewTun is called by Kotlin when the system gives back a fresh
 // utun fd (e.g. after VpnService.Builder rebuild on a network change).
-// The engine swaps the underlying TUN without dropping the WG session.
-//
-// TODO(track-A): wire to internal/tunnel.Engine.RenewTun(fd) once it lands.
+// Not yet implemented — the engine currently does not support hot-swap
+// of the underlying tun fd. Stop()+Run() is the supported path.
 func (c *Client) RenewTun(fd int) error {
 	if fd < 0 {
 		return fmt.Errorf("renew tun: invalid fd %d", fd)
 	}
-	return errors.New("renew tun: engine not yet integrated; depends on Track A internal/tunnel converging")
+	return errors.New("renew tun: in-place fd swap not yet supported; call Stop() then Run()")
 }
 
 // SetTraceLogLevel / SetInfoLogLevel are stubs that match netbird's
@@ -236,7 +285,7 @@ func (c *Client) SetInfoLogLevel()  {}
 //	}
 //
 // Kotlin polls this on the status pane (cheap; in-memory). For
-// per-second handshake / bytes-in/out, Track A will add a separate
+// per-second handshake / bytes-in/out, a future hook will add a separate
 // streaming RPC; this method stays for the at-a-glance UI poll.
 func (c *Client) GetTunnelStatus() string {
 	c.mu.RLock()
@@ -264,28 +313,43 @@ func (c *Client) GetTunnelStatus() string {
 	return string(b)
 }
 
-func (c *Client) assertBundlePresent() error {
+// loadVerifiedBundle reads the persisted bundle and re-verifies it against
+// the pinned trust anchors. Re-verification on every Run lets a trust
+// anchor rotation between Import and Run cleanly revoke an in-flight
+// session that was authorised under an older root.
+func (c *Client) loadVerifiedBundle() (string, *bundle.EnrollmentBundle, error) {
 	c.mu.RLock()
 	files := c.files
 	c.mu.RUnlock()
 	if files == nil {
-		return errors.New("no PlatformFiles attached")
+		return "", nil, errors.New("no PlatformFiles attached")
 	}
 	cfgPath := files.ConfigurationFilePath()
 	if cfgPath == "" {
-		return errors.New("ConfigurationFilePath empty")
+		return "", nil, errors.New("ConfigurationFilePath empty")
 	}
-	st, err := os.Stat(cfgPath)
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("no bundle imported; call ImportBundle first")
+			return "", nil, errors.New("no bundle imported; call ImportBundle first")
 		}
-		return fmt.Errorf("stat bundle: %w", err)
+		return "", nil, fmt.Errorf("read bundle: %w", err)
 	}
-	if st.Size() == 0 {
-		return errors.New("imported bundle is empty")
+	parsed, err := bundle.Unmarshal(raw)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse bundle: %w", err)
 	}
-	return nil
+	signable, err := parsed.Signable()
+	if err != nil {
+		return "", nil, fmt.Errorf("rebuild signable: %w", err)
+	}
+	if _, err := trustanchor.Default().Verify(parsed.Signature, signable); err != nil {
+		return "", nil, fmt.Errorf("verify bundle: %w", err)
+	}
+	if err := parsed.CheckExpiry(time.Now()); err != nil {
+		return "", nil, err
+	}
+	return cfgPath, parsed, nil
 }
 
 func (c *Client) fail(reason string) {
@@ -303,4 +367,43 @@ func exportEnv(envList *EnvList) {
 	for k, v := range envList.snapshot() {
 		_ = os.Setenv(k, v)
 	}
+}
+
+func dnsListSnapshot(d *DNSList) []netip.Addr {
+	if d == nil {
+		return nil
+	}
+	aps := d.snapshot()
+	out := make([]netip.Addr, 0, len(aps))
+	for _, ap := range aps {
+		out = append(out, ap.Addr())
+	}
+	return out
+}
+
+// joinDNSAddrs renders the resolver list as a comma-separated string, the
+// shape TunAdapter.ConfigureInterface expects (Kotlin splits on `,` then
+// addDnsServer per entry).
+func joinDNSAddrs(addrs []netip.Addr) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		parts = append(parts, a.String())
+	}
+	return strings.Join(parts, ",")
+}
+
+// joinAllowedIPs renders the AllowedIPs CIDR list as a comma-separated
+// string for VpnService.Builder.addRoute (Kotlin splits and parses each).
+func joinAllowedIPs(prefixes []netip.Prefix) string {
+	if len(prefixes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		parts = append(parts, p.String())
+	}
+	return strings.Join(parts, ",")
 }

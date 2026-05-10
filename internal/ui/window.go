@@ -114,22 +114,31 @@ func (m *mainWindow) stopPolling() {
 	}
 }
 
+// pollOnce reads the daemon status (from a worker goroutine) and
+// marshals every UI mutation back onto the Fyne main goroutine via
+// fyne.Do — Fyne v2.5+ strict thread-checker rejects widget mutations
+// from non-main goroutines (F-108).
 func (m *mainWindow) pollOnce(ctx context.Context) {
 	st, err := m.client.GetStatus(ctx)
 	if err != nil {
 		return
 	}
-	m.applyState(st.State)
-	if m.tabs != nil {
-		switch m.tabs.SelectedIndex() {
-		case 1:
-			m.statusPane.apply(st)
-		case 2:
-			m.diagsPane.Refresh()
+	fyne.Do(func() {
+		m.applyState(st.State)
+		if m.tabs != nil {
+			switch m.tabs.SelectedIndex() {
+			case 1:
+				m.statusPane.apply(st)
+			case 2:
+				m.diagsPane.Refresh()
+			}
 		}
-	}
+	})
 }
 
+// applyState mutates header widgets to reflect the current daemon state.
+// Caller is responsible for running this on the Fyne main goroutine
+// (wrap with fyne.Do if calling from a worker). pollOnce already wraps.
 func (m *mainWindow) applyState(s ipc.State) {
 	m.indicator.FillColor = stateColor(s)
 	m.indicator.Refresh()
@@ -165,10 +174,13 @@ func (m *mainWindow) toggleConnection() {
 			opErr = m.client.Connect(opCtx)
 		}
 		if opErr != nil {
-			dialog.ShowError(opErr, m.win)
-			m.notify.Send("Tunnel error", opErr.Error())
+			// dialog.ShowError + notifier touch UI; marshal to main goroutine.
+			fyne.Do(func() {
+				dialog.ShowError(opErr, m.win)
+				m.notify.Send("Tunnel error", opErr.Error())
+			})
 		}
-		m.pollOnce(opCtx)
+		m.pollOnce(opCtx) // pollOnce already wraps its own UI mutations.
 	}()
 }
 

@@ -4,14 +4,9 @@ package tunnel
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -160,85 +155,3 @@ func (d *desktopTunnel) Close() error {
 	return err
 }
 
-// buildUAPI renders the cfg to wireguard-go's UAPI text format. UAPI keys
-// are documented in wireguard.com/xplatform/. The format is line-oriented
-// with `key=value` pairs and a blank line as terminator; IpcSet expects a
-// single block (no trailing blank line in our case — IpcSet handles both
-// shapes).
-func buildUAPI(cfg Config) (string, error) {
-	if len(cfg.PrivateKey) != 32 {
-		return "", errors.New("private key not 32 bytes")
-	}
-	if len(cfg.Peer.PublicKey) != 32 {
-		return "", errors.New("peer public key not 32 bytes")
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "private_key=%s\n", hex.EncodeToString(cfg.PrivateKey))
-	if cfg.ListenPort > 0 {
-		fmt.Fprintf(&sb, "listen_port=%d\n", cfg.ListenPort)
-	}
-	sb.WriteString("replace_peers=true\n")
-	fmt.Fprintf(&sb, "public_key=%s\n", hex.EncodeToString(cfg.Peer.PublicKey))
-	if cfg.Peer.Endpoint != "" {
-		host, port, err := net.SplitHostPort(cfg.Peer.Endpoint)
-		if err != nil {
-			return "", fmt.Errorf("split endpoint %q: %w", cfg.Peer.Endpoint, err)
-		}
-		ips, err := net.LookupIP(host)
-		if err != nil || len(ips) == 0 {
-			return "", fmt.Errorf("resolve endpoint host %q: %w", host, err)
-		}
-		fmt.Fprintf(&sb, "endpoint=%s\n", net.JoinHostPort(ips[0].String(), port))
-	}
-	if cfg.Peer.PersistentKeepalive > 0 {
-		fmt.Fprintf(&sb, "persistent_keepalive_interval=%d\n", int(cfg.Peer.PersistentKeepalive.Seconds()))
-	}
-	sb.WriteString("replace_allowed_ips=true\n")
-	for _, p := range cfg.Peer.AllowedIPs {
-		fmt.Fprintf(&sb, "allowed_ip=%s\n", p.String())
-	}
-	return sb.String(), nil
-}
-
-// readUAPIStats issues an IpcGet against the device and parses the
-// response into Stats. UAPI returns `tx_bytes`, `rx_bytes`,
-// `last_handshake_time_sec` (and _nsec) per peer.
-func readUAPIStats(dev *wgdevice.Device) (Stats, error) {
-	pr, pw := io.Pipe()
-	errCh := make(chan error, 1)
-	go func() {
-		defer pw.Close()
-		errCh <- dev.IpcGetOperation(pw)
-	}()
-	var stats Stats
-	scanner := newLineScanner(pr)
-	for scanner.Scan() {
-		k, v, ok := splitKV(scanner.Text())
-		if !ok {
-			continue
-		}
-		switch k {
-		case "tx_bytes":
-			stats.BytesOut, _ = strconv.ParseUint(v, 10, 64)
-		case "rx_bytes":
-			stats.BytesIn, _ = strconv.ParseUint(v, 10, 64)
-		case "last_handshake_time_sec":
-			s, _ := strconv.ParseInt(v, 10, 64)
-			if s > 0 {
-				stats.LastHandshake = time.Unix(s, 0)
-			}
-		}
-	}
-	if err := <-errCh; err != nil {
-		return stats, fmt.Errorf("ipc get: %w", err)
-	}
-	return stats, nil
-}
-
-func splitKV(line string) (string, string, bool) {
-	eq := strings.IndexByte(line, '=')
-	if eq <= 0 {
-		return "", "", false
-	}
-	return line[:eq], line[eq+1:], true
-}

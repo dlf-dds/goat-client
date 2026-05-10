@@ -70,15 +70,21 @@ func (p *diagnosticsPane) runProbe() {
 	}
 	p.probeMsg.SetText("Probing...")
 	go func() {
+		// UI mutations from the probe goroutine must marshal back to
+		// the Fyne main goroutine via fyne.Do (F-108).
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		d, err := p.client.GetDiagnostics(ctx)
 		if err != nil {
-			p.probeMsg.SetText("Probe failed: " + err.Error())
+			fyne.Do(func() {
+				p.probeMsg.SetText("Probe failed: " + err.Error())
+			})
 			return
 		}
-		p.renderProbe(d)
-		p.logs.SetText(strings.Join(d.LogTail, "\n"))
+		fyne.Do(func() {
+			p.renderProbe(d)
+			p.logs.SetText(strings.Join(d.LogTail, "\n"))
+		})
 	}()
 }
 
