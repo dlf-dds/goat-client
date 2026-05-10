@@ -280,10 +280,13 @@ jobs:
 
           if [ "$GOOS" = "windows" ]; then
             archive="${name}.zip"
-            # -X strips extra zip fields, -9 max compression. cd into
-            # dist_dir so the archive layout is flat (both .exe at top
-            # level), matching the .tar.gz layout.
-            (cd "$dist_dir" && zip -X -9 "../../${archive}" \
+            # `zip` is not on Git Bash PATH on the windows-latest /
+            # windows-11-arm runners; `7z` is preinstalled and adds an
+            # `a -tzip` mode that produces a standard zip archive.
+            # -mx=9 → max compression. -bd → no progress to stdout.
+            # cd into dist_dir so the archive layout is flat (both
+            # .exe at top level), matching the .tar.gz layout.
+            (cd "$dist_dir" && 7z a -tzip -mx=9 -bd "../../${archive}" \
               "goat-clientd${ext}" "goat-client${ext}" >/dev/null)
           else
             archive="${name}.tar.gz"
