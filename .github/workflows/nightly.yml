@@ -1,0 +1,187 @@
+name: nightly-realprotocol
+
+# Track G item 3 — real-protocol smoke against the live wg-cp0 endpoint
+# in the goat sandbox lab. Sibling to integration.yml (Tier-A IPC
+# contract, always-runs) and ci.yml (always-fast vet/test/build). This
+# is the Tier-B job: live network, requires lab credentials.
+#
+# Triggers:
+#   - schedule: 03:23 UTC nightly (off-peak; asymmetric minute so it
+#     doesn't pile up with other :00 nightly jobs)
+#   - pull_request: when a PR touches tunnel- or bundle-package code
+#     (so a regression in those packages can't silently land before
+#     the next nightly)
+#   - workflow_dispatch: operator-fired re-run after wiring secrets or
+#     debugging the lab endpoint
+#
+# Required repo secrets (operator-provisioned; see
+# tests/integration/README.md for the lab-endpoint contract):
+#
+#   LAB_BUNDLE_B64        base64-encoded CBOR EnrollmentBundle, signed
+#                         by the lab offline-CA, valid for a wg-cp0
+#                         endpoint reachable from GitHub-hosted runners
+#   LAB_TRUST_ROOTS_B64   base64-encoded PEM with the Ed25519 pubkey
+#                         that signed the bundle
+#
+# When either secret is unset (e.g., a fork PR, or before the operator
+# wires the lab), the test self-skips (see realprotocol_test.go) and
+# the job goes green — same behavior as integration.yml's compile-and-
+# skip realprotocol step.
+#
+# Failure notification: a tracking issue labeled
+# `nightly-realprotocol-failure` is opened on first failure and
+# updated with each subsequent failure run. The next green run closes
+# it. PR runs do NOT touch the issue tracker — they surface in the PR
+# check list directly.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  pull_request:
+    paths:
+      - "internal/tunnel/**"
+      - "internal/bundle/**"
+      - "tests/integration/**"
+      - ".github/workflows/nightly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Don't cancel an in-flight nightly when a PR push lands on the same
+  # ref bucket; the live-network run is more expensive than waiting.
+  cancel-in-progress: false
+
+jobs:
+  realprotocol-smoke:
+    name: realprotocol smoke (Tier-B — live wg-cp0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Stage lab credentials
+        id: stage
+        env:
+          LAB_BUNDLE_B64: ${{ secrets.LAB_BUNDLE_B64 }}
+          LAB_TRUST_ROOTS_B64: ${{ secrets.LAB_TRUST_ROOTS_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${LAB_BUNDLE_B64:-}" || -z "${LAB_TRUST_ROOTS_B64:-}" ]]; then
+            echo "::notice::LAB_BUNDLE_B64 / LAB_TRUST_ROOTS_B64 not configured; realprotocol test will self-skip"
+            echo "bundle_path=" >> "$GITHUB_OUTPUT"
+            echo "trust_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tmp="$(mktemp -d)"
+          printf '%s' "$LAB_BUNDLE_B64" | base64 --decode > "$tmp/bundle.cbor"
+          printf '%s' "$LAB_TRUST_ROOTS_B64" | base64 --decode > "$tmp/trust-roots.pem"
+          chmod 0600 "$tmp/bundle.cbor" "$tmp/trust-roots.pem"
+          echo "bundle_path=$tmp/bundle.cbor" >> "$GITHUB_OUTPUT"
+          echo "trust_path=$tmp/trust-roots.pem" >> "$GITHUB_OUTPUT"
+
+      - name: go test -tags=realprotocol
+        env:
+          GOAT_LAB_BUNDLE_PATH: ${{ steps.stage.outputs.bundle_path }}
+          GOAT_LAB_TRUST_ROOTS_PATH: ${{ steps.stage.outputs.trust_path }}
+          # CGO disabled to match Track A's daemon build; the test
+          # harness rebuilds cmd/goat-clientd on the runner.
+          CGO_ENABLED: "0"
+        run: |
+          go test -tags=realprotocol -count=1 -v -timeout 5m ./tests/integration/...
+
+  notify-failure:
+    name: open or update failure issue
+    needs: realprotocol-smoke
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          LABEL="nightly-realprotocol-failure"
+
+          # Idempotent label create; ignores 'already exists'.
+          gh label create "$LABEL" \
+            --description "nightly real-protocol smoke is red" \
+            --color "B60205" >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')"
+          ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          if [[ -n "${existing:-}" ]]; then
+            gh issue comment "$existing" \
+              --body "Nightly realprotocol smoke failed again at $ts (run #$RUN_NUMBER): $RUN_URL"
+          else
+            body="$(cat <<EOF
+          The nightly realprotocol smoke against the lab wg-cp0 endpoint failed.
+
+          - First observed: $ts (run #$RUN_NUMBER)
+          - Run: $RUN_URL
+
+          While this issue is open, each subsequent failure will append a
+          comment here. The next green run on \`schedule\` or
+          \`workflow_dispatch\` will close this issue automatically.
+
+          Likely causes (in priority order):
+
+          1. Lab \`wg-cp0\` endpoint unreachable / down — verify with
+             \`curl\` or \`wg show\` from the operator workstation.
+          2. \`LAB_BUNDLE_B64\` secret expired (bundles are time-bounded;
+             \`expires_at\` field in the CBOR). Re-mint and rotate.
+          3. Drift in \`internal/tunnel/**\` or \`internal/bundle/**\`
+             since the bundle was minted (e.g., schema bump).
+          4. Trust-root key rotation: \`LAB_TRUST_ROOTS_B64\` no longer
+             matches the signing key.
+
+          See \`tests/integration/README.md\` for the lab-endpoint
+          contract and the secret-rotation runbook.
+          EOF
+          )"
+            gh issue create \
+              --label "$LABEL" \
+              --title "Nightly realprotocol smoke failing (since $ts)" \
+              --body "$body"
+          fi
+
+  notify-recovery:
+    name: close failure issue on green
+    needs: realprotocol-smoke
+    if: ${{ success() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close tracking issue on green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          LABEL="nightly-realprotocol-failure"
+          existing="$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "${existing:-}" ]]; then
+            ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            gh issue comment "$existing" \
+              --body "Nightly realprotocol smoke recovered at $ts (run #$RUN_NUMBER): $RUN_URL — closing."
+            gh issue close "$existing"
+          else
+            echo "no open failure issue to close"
+          fi
