@@ -79,4 +79,4 @@ jobs:
         # header for full rationale.
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.7
+          version: v2.12.2
