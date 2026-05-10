@@ -133,19 +133,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // FD extraction: NEPacketTunnelProvider gives us packetFlow but
             // not the raw utun FD. The wireguard-go iOS port locates the FD
             // by walking open file descriptors and matching the utun control
-            // socket name. Track A's iface/device/device_ios.go will carry
-            // the documented dance; until then we pass -1 and the Go stub
-            // returns ErrTrackANotYetWired.
+            // socket name (see netbird client/iface/device/device_ios.go for
+            // the documented dance). Until that helper is ported into the
+            // Swift shell, we pass -1 — RunOnMobile will reject it with
+            // "tunnel: invalid fd -1" so the surfaced error is clear.
             let fd: Int32 = -1
             let ifaceName = "utun-goat"
 
+            // gomobile binds Go funcs returning `error` to Objective-C
+            // methods of shape `-(BOOL)…error:NSError**`, which Swift
+            // auto-bridges to a throwing call. Use try/catch rather than the
+            // old explicit error: parameter style.
             var runErr: NSError?
-            client.run(fd, interfaceName: ifaceName, envList: nil, error: &runErr)
-
-            if let err = runErr {
-                os_log("GoatClientSDK.Run returned: %{public}@", log: Self.log, type: .error, String(describing: err))
-            } else {
+            do {
+                try client.run(fd, interfaceName: ifaceName, envList: nil)
                 os_log("GoatClientSDK.Run returned cleanly", log: Self.log, type: .info)
+            } catch let err as NSError {
+                runErr = err
+                os_log("GoatClientSDK.Run returned: %{public}@", log: Self.log, type: .error, String(describing: err))
             }
 
             // Run() returned (either Stop was called, or it errored). Tell NE

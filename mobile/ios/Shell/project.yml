@@ -15,7 +15,7 @@ name: GoatClient
 options:
   bundleIdPrefix: io.dlf-dds.goat-client
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "16.0"
   developmentLanguage: en
   groupSortPosition: top
   generateEmptyDirectories: true
@@ -44,10 +44,6 @@ targets:
     sources:
       - path: App
       - path: Shared
-    info:
-      path: App/Info.plist
-    entitlements:
-      path: App/GoatClient.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.dlf-dds.goat-client
@@ -73,10 +69,6 @@ targets:
     sources:
       - path: PacketTunnel
       - path: Shared
-    info:
-      path: PacketTunnel/Info.plist
-    entitlements:
-      path: PacketTunnel/PacketTunnel.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.dlf-dds.goat-client.PacketTunnel
