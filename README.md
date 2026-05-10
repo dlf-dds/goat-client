@@ -6,7 +6,9 @@ Consumes an [offline-CA-signed CBOR bundle](https://github.com/dlf-dds/DesertBre
 
 ## Status
 
-**Scaffolding (2026-05-09).** Foundation commit just landed. Build-out is happening in parallel via multiple Claude Code sessions per `HANDOFF.md`. **NOT shippable yet.**
+**v0.1.0 shipped 2026-05-10** — first stable release. Cosign-signed daemon binaries for six desktop targets are at the [v0.1.0 GitHub Release](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.0). See [`docs/quickstart.md`](docs/quickstart.md) for install + first-bundle import in 10 minutes.
+
+> **Maturity: operator-class first-contact dogfood.** UI tests, real-device mobile validation, real-protocol smoke against a live wg-cp0 endpoint, and cross-platform PR gating land in v0.1.1. The v0.1.0 release ships **daemon-only** binaries; build the Fyne GUI yourself with `go build ./cmd/goat-client`. Don't issue this to non-engineer end users yet.
 
 ## Platforms
 
@@ -23,10 +25,10 @@ Apache 2.0 (see [LICENSE](LICENSE)). Forked from netbird's BSD-3-Clause-licensed
 ## Build
 
 ```bash
-go build ./...
+go build ./...    # daemon + GUI, all six platforms compile clean
 ```
 
-(Currently builds the scaffolding stubs. Real build emerges as workstreams land.)
+For end-user install instructions (download the release tarball, drop trust-roots PEM, run), see [`docs/quickstart.md`](docs/quickstart.md).
 
 ### iOS
 
