@@ -88,11 +88,12 @@ func (p *diagnosticsPane) renderProbe(d *ipc.Diagnostics) {
 		return
 	}
 	when := d.LastProbe.Format(time.RFC3339)
-	if d.Reachable {
+	switch {
+	case d.Reachable:
 		p.probeMsg.SetText("Reachable as of " + when)
-	} else if d.ProbeError != "" {
+	case d.ProbeError != "":
 		p.probeMsg.SetText("Unreachable as of " + when + ": " + d.ProbeError)
-	} else {
+	default:
 		p.probeMsg.SetText("Unreachable as of " + when)
 	}
 }

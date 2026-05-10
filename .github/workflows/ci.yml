@@ -52,3 +52,31 @@ jobs:
         run: go test -race -count=1 ./...
       - name: go build
         run: go build ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install Fyne build dependencies (CGO/OpenGL/X11)
+        # Same rationale as the `fast` job: golangci-lint compiles
+        # transitively through internal/ui's Fyne imports.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev xorg-dev libxkbcommon-dev pkg-config
+      - name: golangci-lint
+        # Strict lint discipline per Block 76 GAP #1 (2026-05-10
+        # engineering-quality survey vs upstream netbird). Config at
+        # .golangci.yaml — adapted from netbird's strict config (BSD
+        # 3-Clause). Enabled linters: errcheck, gosec, govet, revive,
+        # staticcheck, unused, plus 13 others. See .golangci.yaml
+        # header for full rationale.
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.7

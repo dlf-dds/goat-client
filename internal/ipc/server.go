@@ -51,11 +51,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		if err != nil {
 			if ctx.Err() != nil {
 				s.wg.Wait()
-				return nil
+				return nil //nolint:nilerr // Accept failure on cancelled ctx is graceful shutdown
 			}
 			if errors.Is(err, net.ErrClosed) {
 				s.wg.Wait()
-				return nil
+				return nil //nolint:nilerr // listener closed by Stop() is graceful shutdown
 			}
 			return fmt.Errorf("accept: %w", err)
 		}

@@ -87,7 +87,7 @@ func (c *rpcClient) call(method Method, params, out interface{}, timeout time.Du
 	req := rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: rawParams}
 	if timeout > 0 {
 		_ = c.conn.SetDeadline(time.Now().Add(timeout))
-		defer c.conn.SetDeadline(time.Time{})
+		defer func() { _ = c.conn.SetDeadline(time.Time{}) }()
 	}
 	if err := c.enc.Encode(req); err != nil {
 		return fmt.Errorf("write request: %w", err)

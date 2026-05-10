@@ -59,8 +59,7 @@ func base45Encode(src []byte) string {
 var errBase45 = errors.New("invalid base45 input")
 
 func base45DecodeString(s string) ([]byte, error) {
-	switch len(s) % 3 {
-	case 1:
+	if len(s)%3 == 1 {
 		return nil, fmt.Errorf("%w: length %d not in {0,2 mod 3} group", errBase45, len(s))
 	}
 

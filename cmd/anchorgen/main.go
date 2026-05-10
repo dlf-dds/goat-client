@@ -87,7 +87,7 @@ func run(inPath, outPath, pkgName string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(outPath, src, 0o644)
+	return os.WriteFile(outPath, src, 0o644) //nolint:gosec // generated Go file with public-key constants — world-readable is correct
 }
 
 func decode(in []yamlAnchor) ([]anchor, error) {
