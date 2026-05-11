@@ -25,40 +25,35 @@
 > via `/iso enter <track-name>` from the master goat-client checkout
 > as before.
 >
-> 1. **Mobile tunnel wire-up.** Tracks C (iOS) + D (Android) ship in
->    v0.1.0 with `Run()` returning `ErrTrackANotYetWired` — the
->    gomobile facade builds and round-trips a bundle in
->    Simulator/emulator, but tunnel up needs Track A's
->    `tunnel.RunOniOS` / `tunnel.RunOnAndroid` adapter exposed on the
->    facade. Track name: `goat-client-mobile-tunnel-wireup` (worktree
->    already provisioned at `.claude/worktrees/goat-client-mobile-tunnel-wireup/`).
-> 2. **Per-platform DNS adapters.** v0.1.0's
->    `internal/tunnel/dns/adapter_{linux,darwin,windows}.go` are
->    no-ops with file-level pointers to the netbird sources to lift
->    (`client/internal/dns/host_unix.go` / `host_darwin.go` /
->    `host_windows.go`). Symptom in v0.1.0: tunnel handshakes, ping
->    by IP works, name resolution doesn't. Track name:
->    `goat-client-trackA-phase2-dns` (worktree provisioned at
->    `.claude/worktrees/goat-client-trackA-phase2/`).
-> 3. **Real-protocol nightly.** Track G's hermetic Tier-A integration
->    tests run in CI; the realprotocol-tagged Tier-B sibling
->    (`tests/integration/realprotocol/`, gated behind
->    `GOAT_LAB_BUNDLE_PATH` + `GOAT_LAB_TRUST_ROOTS_PATH`) needs a
->    nightly schedule + a wg-cp0 endpoint reservation in the goat
->    sandbox lab. Track name: `goat-client-trackE-phase2-nightly`
->    (worktree provisioned at `.claude/worktrees/goat-client-trackE-phase2/`).
+> 1. ~~**Mobile tunnel wire-up.**~~ ✅ landed in v0.1.1 (PR #18). Both
+>    iOS + Android shells now call `tunnel.RunOnMobile(ctx, fd, ...)`;
+>    `ImportBundle` does `bundle.Parse` + `bundle.Verify` against the
+>    embedded trust roots from `internal/trustanchor`. Simulator +
+>    emulator handshake smoke confirmed.
+> 2. ~~**Per-platform DNS adapters.**~~ ✅ landed in v0.1.1 (PR #19).
+>    systemd-resolved / scutil / NRPT all wired through
+>    `tunnel.Config.DNSServers`. The v0.1.0 symptom (handshake works,
+>    name resolution doesn't) is resolved.
+> 3. ~~**Real-protocol nightly.**~~ ✅ landed in v0.1.1 (PR #16).
+>    `.github/workflows/nightly.yml` runs weekly + on tunnel-package
+>    PRs, gated on `LAB_*` secrets (self-skips if unset). Probe peer
+>    is a cartoon-peer mesh IP per the lab-endpoint contract in
+>    `tests/integration/README.md`.
 > 4. **GAP #2 — UI test coverage.** Track B's Fyne dialogs ship with
 >    no test coverage; netbird's upstream survey flagged ~3-4 days of
 >    headless Fyne tests as the gap. Track name TBD by captain.
-> 5. **GAP #3 — cross-platform PR gate.** v0.1.0's release.yml runs
->    cross-builds on tag push, not PR. The lint + vet/test/build job
->    that runs on every PR only exercises Linux. Land a matrix-build
->    PR gate; ~1-2 days. Track name TBD.
+> 5. **GAP #3 — cross-platform PR gate.** v0.1.x's release.yml runs
+>    the six-target matrix on tag push, not on every PR. The lint +
+>    vet/test/build job that runs on every PR only exercises Linux.
+>    Land a matrix-build PR gate; ~1-2 days. Track name TBD.
 > 6. **Apple Developer ID + Authenticode procurement.** Engineering
->    builds ship unsigned in v0.1.0. Once procurement clears, drop
->    the unsigned-builds caveats from README + troubleshooting and
->    wire the signing env vars into release.yml. Operator-fired,
+>    builds ship unsigned in v0.1.0 + v0.1.1. Once procurement clears,
+>    drop the unsigned-builds caveats from README + troubleshooting
+>    and wire the signing env vars into release.yml. Operator-fired,
 >    not a coding track.
+>
+> Items 1-3 closed in v0.1.1 (2026-05-11). Items 4-6 carry forward as
+> v0.1.x backlog.
 >
 > ---
 >
