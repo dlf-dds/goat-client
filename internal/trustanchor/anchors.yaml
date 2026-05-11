@@ -1,9 +1,15 @@
-# Pinned offline-CA root public keys (Ed25519) compiled into goat-client.
+# Pinned offline-CA root public keys (ECDSA P-256) compiled into goat-client.
 #
 # Authoritative source: goat-trunk (DesertBreadBird) repo at
 # ops/enrollment/public-keys/. This file mirrors the entries the binary
 # should accept; refresh it whenever the offline-CA team publishes a new
 # root or rotates an existing one.
+#
+# Block 79 (goat-trunk commit 3dd4a765, 2026-05-09) hard-cut over the
+# offline CA root from Ed25519 to ECDSA P-256 — F-090: macOS Keychain
+# refuses Ed25519 root imports. The Ed25519 anchor
+# dev-desertbread-ca-2026-04-20 is retired across the substrate; this
+# file no longer carries it.
 #
 # Regenerate embedded.go after every edit:
 #   go generate ./internal/trustanchor
@@ -17,18 +23,20 @@
 #       valid_from:     RFC3339 UTC; before this, Verify ignores the anchor
 #       valid_until:    RFC3339 UTC; after this, Verify ignores the anchor
 #       public_key_pem: PKIX SubjectPublicKeyInfo PEM (BEGIN PUBLIC KEY)
-#                       must encode an Ed25519 key
+#                       OR X.509 CERTIFICATE PEM (BEGIN CERTIFICATE)
+#                       — must carry an ECDSA P-256 key
 #
 # Multi-anchor rotation: list both old and new anchors with overlapping
 # windows during the rotation. After the cutover date, drop the old
 # anchor and re-run anchorgen.
 
 anchors:
-  - name: dev-desertbread-ca-2026-04-20
-    issuer: dev-desertbread-ca-2026-04-20
-    valid_from: 2026-04-20T00:00:00Z
-    valid_until: 2027-04-20T00:00:00Z
+  - name: dev-desertbread-ca-ecdsa-2026-05-09
+    issuer: dev-desertbread-ca-ecdsa-2026-05-09
+    valid_from: 2026-05-09T00:00:00Z
+    valid_until: 2027-05-09T00:00:00Z
     public_key_pem: |
       -----BEGIN PUBLIC KEY-----
-      MCowBQYDK2VwAyEAtSpG+sXfUp5ghqQ75bD4ljIvwclPQ0ATdYIDbNnRjCU=
+      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbL9rt5sLRBrQABTU9PFbx+PrSwGa
+      oAcvQlrC53pZOy086qSvLMD5fZx9Q4+epTW15zrgVTmXxdv/4qvwaim/wQ==
       -----END PUBLIC KEY-----

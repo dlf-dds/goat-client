@@ -1,8 +1,10 @@
 package trustanchor
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"testing"
 	"time"
@@ -17,23 +19,53 @@ func fixedClock(at time.Time) func() time.Time {
 // genAnchor produces an Anchor whose validity window contains `at`. The
 // caller can pass a custom clock when constructing the Set so signing
 // and verification observe the same notion of "now".
-func genAnchor(t *testing.T, name string, validFrom, validUntil time.Time) (Anchor, ed25519.PrivateKey) {
+func genAnchor(t *testing.T, name string, validFrom, validUntil time.Time) (Anchor, *ecdsa.PrivateKey) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("ed25519.GenerateKey: %v", err)
+		t.Fatalf("ecdsa.GenerateKey: %v", err)
 	}
 	return Anchor{
 		Name:       name,
 		Issuer:     name,
-		PublicKey:  pub,
+		PublicKey:  &priv.PublicKey,
 		ValidFrom:  validFrom,
 		ValidUntil: validUntil,
 	}, priv
 }
 
+// signECDSA computes the ASN.1-encoded ECDSA signature over SHA-256 of
+// payload — mirrors the offline CA's sign-flow byte-for-byte (Block 79
+// commit 3dd4a765).
+func signECDSA(t *testing.T, priv *ecdsa.PrivateKey, payload []byte) []byte {
+	t.Helper()
+	digest := sha256.Sum256(payload)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatalf("ecdsa.SignASN1: %v", err)
+	}
+	return sig
+}
+
+// wrongCurveKey returns an ecdsa.PublicKey on the P-384 curve — used to
+// drive the curve-check error path.
+func wrongCurveKey(t *testing.T) *ecdsa.PublicKey {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa.GenerateKey(P384): %v", err)
+	}
+	return &priv.PublicKey
+}
+
 func TestNewSetRejectsBadAnchors(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	goodPub := &priv.PublicKey
 
 	cases := []struct {
 		name    string
@@ -43,27 +75,27 @@ func TestNewSetRejectsBadAnchors(t *testing.T) {
 		{
 			name: "empty name",
 			anchor: Anchor{
-				PublicKey:  make([]byte, ed25519.PublicKeySize),
+				PublicKey:  goodPub,
 				ValidFrom:  now,
 				ValidUntil: now.Add(time.Hour),
 			},
 			wantErr: "name is empty",
 		},
 		{
-			name: "wrong key size",
+			name: "wrong curve",
 			anchor: Anchor{
 				Name:       "x",
-				PublicKey:  []byte{0x00},
+				PublicKey:  wrongCurveKey(t),
 				ValidFrom:  now,
 				ValidUntil: now.Add(time.Hour),
 			},
-			wantErr: "wrong size",
+			wantErr: "want P-256",
 		},
 		{
 			name: "until before from",
 			anchor: Anchor{
 				Name:       "x",
-				PublicKey:  make([]byte, ed25519.PublicKeySize),
+				PublicKey:  goodPub,
 				ValidFrom:  now,
 				ValidUntil: now.Add(-time.Hour),
 			},
@@ -73,51 +105,60 @@ func TestNewSetRejectsBadAnchors(t *testing.T) {
 			name: "until equals from",
 			anchor: Anchor{
 				Name:       "x",
-				PublicKey:  make([]byte, ed25519.PublicKeySize),
+				PublicKey:  goodPub,
 				ValidFrom:  now,
 				ValidUntil: now,
 			},
 			wantErr: "valid_until",
 		},
+		{
+			name: "no pubkey and no SPKI",
+			anchor: Anchor{
+				Name:       "x",
+				ValidFrom:  now,
+				ValidUntil: now.Add(time.Hour),
+			},
+			wantErr: "PublicKey and SPKI both empty",
+		},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewSet(tc.anchor)
 			if err == nil {
-				t.Fatalf("NewSet: want error containing %q, got nil", tc.wantErr)
+				t.Fatalf("NewSet succeeded; want error containing %q", tc.wantErr)
 			}
 			if !contains(err.Error(), tc.wantErr) {
-				t.Fatalf("NewSet err = %q, want substring %q", err.Error(), tc.wantErr)
+				t.Errorf("NewSet err = %v, want substring %q", err, tc.wantErr)
 			}
 		})
 	}
 }
 
-func TestVerifySingleActiveAnchor(t *testing.T) {
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	a, priv := genAnchor(t, "ca-1", now.Add(-24*time.Hour), now.Add(24*time.Hour))
+func TestVerifyHappyPath(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	a, priv := genAnchor(t, "ca-1", now.Add(-time.Hour), now.Add(time.Hour))
 	s, err := NewSet(a)
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
 	s = s.withClock(fixedClock(now))
 
-	payload := []byte("synthetic-bundle-payload")
-	sig := ed25519.Sign(priv, payload)
+	payload := []byte("happy-bundle-payload")
+	sig := signECDSA(t, priv, payload)
 
 	got, err := s.Verify(sig, payload)
 	if err != nil {
-		t.Fatalf("Verify: unexpected error %v", err)
+		t.Fatalf("Verify: %v", err)
 	}
 	if got.Name != "ca-1" {
-		t.Errorf("Verify returned anchor %q, want %q", got.Name, "ca-1")
+		t.Errorf("returned anchor = %q, want ca-1", got.Name)
 	}
 }
 
-func TestVerifyRotationAcceptsBoth(t *testing.T) {
-	// Rotation window: old anchor's validity overlaps with the new
-	// anchor's. Bundles signed by either key must verify, and Verify
-	// must report the actual signing anchor (not just the first one
+func TestVerifyRotationOverlapWindow(t *testing.T) {
+	// Both old + new anchors are active. Verify must return the
+	// anchor that actually signed (and not the first one merely
 	// tried) so audit logs are correct.
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
@@ -133,7 +174,7 @@ func TestVerifyRotationAcceptsBoth(t *testing.T) {
 	payload := []byte("rotation-bundle-payload")
 
 	t.Run("signed by old", func(t *testing.T) {
-		sig := ed25519.Sign(oldPriv, payload)
+		sig := signECDSA(t, oldPriv, payload)
 		got, err := s.Verify(sig, payload)
 		if err != nil {
 			t.Fatalf("Verify: %v", err)
@@ -144,7 +185,7 @@ func TestVerifyRotationAcceptsBoth(t *testing.T) {
 	})
 
 	t.Run("signed by new", func(t *testing.T) {
-		sig := ed25519.Sign(newPriv, payload)
+		sig := signECDSA(t, newPriv, payload)
 		got, err := s.Verify(sig, payload)
 		if err != nil {
 			t.Fatalf("Verify: %v", err)
@@ -156,11 +197,6 @@ func TestVerifyRotationAcceptsBoth(t *testing.T) {
 }
 
 func TestVerifyRefusesExpiredAnchor(t *testing.T) {
-	// Anchor whose validity ended before "now". The signature is
-	// genuine, but the binary must refuse it because the anchor is
-	// retired. With no other active anchor the error must be
-	// ErrNoActiveAnchors so callers can distinguish a stale binary
-	// from an actually-bad signature.
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	a, priv := genAnchor(t, "ca-expired", now.Add(-90*24*time.Hour), now.Add(-1*24*time.Hour))
 	s, err := NewSet(a)
@@ -170,7 +206,7 @@ func TestVerifyRefusesExpiredAnchor(t *testing.T) {
 	s = s.withClock(fixedClock(now))
 
 	payload := []byte("expired-bundle-payload")
-	sig := ed25519.Sign(priv, payload)
+	sig := signECDSA(t, priv, payload)
 
 	got, err := s.Verify(sig, payload)
 	if got != nil {
@@ -182,7 +218,6 @@ func TestVerifyRefusesExpiredAnchor(t *testing.T) {
 }
 
 func TestVerifyRefusesNotYetValidAnchor(t *testing.T) {
-	// Anchor's ValidFrom is in the future. Same fail-closed as expired.
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	a, priv := genAnchor(t, "ca-future", now.Add(7*24*time.Hour), now.Add(60*24*time.Hour))
 	s, err := NewSet(a)
@@ -192,7 +227,7 @@ func TestVerifyRefusesNotYetValidAnchor(t *testing.T) {
 	s = s.withClock(fixedClock(now))
 
 	payload := []byte("future-bundle-payload")
-	sig := ed25519.Sign(priv, payload)
+	sig := signECDSA(t, priv, payload)
 
 	if _, err := s.Verify(sig, payload); !errors.Is(err, ErrNoActiveAnchors) {
 		t.Fatalf("Verify err = %v, want ErrNoActiveAnchors", err)
@@ -200,11 +235,6 @@ func TestVerifyRefusesNotYetValidAnchor(t *testing.T) {
 }
 
 func TestVerifyRotationKeepsActiveWhenOneIsExpired(t *testing.T) {
-	// Old anchor has retired but new anchor is still active.
-	// Bundles signed by the still-active anchor must verify;
-	// bundles signed by the retired anchor must be refused with
-	// ErrUntrusted (there *is* an active anchor, but this signature
-	// doesn't match it — distinct from ErrNoActiveAnchors).
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	old, oldPriv := genAnchor(t, "ca-old", now.Add(-90*24*time.Hour), now.Add(-1*24*time.Hour))
 	newer, newPriv := genAnchor(t, "ca-new", now.Add(-1*24*time.Hour), now.Add(60*24*time.Hour))
@@ -217,7 +247,7 @@ func TestVerifyRotationKeepsActiveWhenOneIsExpired(t *testing.T) {
 
 	payload := []byte("mixed-rotation-payload")
 
-	gotNew, err := s.Verify(ed25519.Sign(newPriv, payload), payload)
+	gotNew, err := s.Verify(signECDSA(t, newPriv, payload), payload)
 	if err != nil {
 		t.Fatalf("Verify(new): %v", err)
 	}
@@ -225,7 +255,7 @@ func TestVerifyRotationKeepsActiveWhenOneIsExpired(t *testing.T) {
 		t.Errorf("active signer = %q, want ca-new", gotNew.Name)
 	}
 
-	if _, err := s.Verify(ed25519.Sign(oldPriv, payload), payload); !errors.Is(err, ErrUntrusted) {
+	if _, err := s.Verify(signECDSA(t, oldPriv, payload), payload); !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("Verify(old) err = %v, want ErrUntrusted", err)
 	}
 }
@@ -239,32 +269,33 @@ func TestVerifyRefusesUnknownSigner(t *testing.T) {
 	}
 	s = s.withClock(fixedClock(now))
 
-	_, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	attackerPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	payload := []byte("attacker-bundle-payload")
-	sig := ed25519.Sign(attackerPriv, payload)
+	sig := signECDSA(t, attackerPriv, payload)
 
 	if _, err := s.Verify(sig, payload); !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("Verify err = %v, want ErrUntrusted", err)
 	}
 }
 
-func TestVerifyRefusesShortSignature(t *testing.T) {
+func TestVerifyRefusesEmptySignature(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	a, _ := genAnchor(t, "ca-1", now.Add(-time.Hour), now.Add(time.Hour))
 	s, _ := NewSet(a)
 	s = s.withClock(fixedClock(now))
 
-	if _, err := s.Verify([]byte{0x00, 0x01}, []byte("payload")); !errors.Is(err, ErrSignatureSize) {
-		t.Fatalf("Verify err = %v, want ErrSignatureSize", err)
+	if _, err := s.Verify(nil, []byte("payload")); !errors.Is(err, ErrEmptySignature) {
+		t.Fatalf("Verify(nil sig) err = %v, want ErrEmptySignature", err)
+	}
+	if _, err := s.Verify([]byte{}, []byte("payload")); !errors.Is(err, ErrEmptySignature) {
+		t.Fatalf("Verify(empty sig) err = %v, want ErrEmptySignature", err)
 	}
 }
 
 func TestActiveSorted(t *testing.T) {
-	// Active() must return anchors sorted by ValidFrom ascending so
-	// callers iterating the result get a stable, oldest-first order.
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	a1, _ := genAnchor(t, "ca-newer", now.Add(-1*24*time.Hour), now.Add(60*24*time.Hour))
@@ -284,10 +315,6 @@ func TestActiveSorted(t *testing.T) {
 }
 
 func TestDefaultEmbeddedSetParses(t *testing.T) {
-	// Sanity check that the build-time-embedded anchors are well-
-	// formed. If anchorgen ever emits a malformed Anchor — wrong
-	// key length, zero name, inverted dates — Default() panics; this
-	// surfaces it as a test failure rather than a daemon crash.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("Default() panicked: %v", r)
@@ -298,8 +325,16 @@ func TestDefaultEmbeddedSetParses(t *testing.T) {
 		t.Fatal("Default() returned empty set; expected at least one embedded anchor")
 	}
 	for _, a := range s.All() {
-		if len(a.PublicKey) != ed25519.PublicKeySize {
-			t.Errorf("anchor %q: pubkey size %d, want %d", a.Name, len(a.PublicKey), ed25519.PublicKeySize)
+		if a.PublicKey == nil {
+			t.Errorf("anchor %q: PublicKey nil after NewSet inflation", a.Name)
+			continue
+		}
+		if a.PublicKey.Curve == nil || a.PublicKey.Curve.Params().Name != elliptic.P256().Params().Name {
+			got := "nil"
+			if a.PublicKey.Curve != nil {
+				got = a.PublicKey.Curve.Params().Name
+			}
+			t.Errorf("anchor %q: curve = %s, want P-256", a.Name, got)
 		}
 		if a.Name == "" {
 			t.Error("embedded anchor with empty name")

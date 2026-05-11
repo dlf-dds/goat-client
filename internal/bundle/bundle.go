@@ -17,10 +17,21 @@
 // the daemon. Preview is a real CBOR parse with no signature check —
 // the daemon owns the authoritative verify step (TrustRoots.VerifyBundle)
 // after the user clicks Apply.
+//
+// Signature algorithm — goat-trunk Block 79 (commit 3dd4a765, 2026-05-09)
+// hard-cut the offline CA root over from Ed25519 to ECDSA P-256 so the
+// root cert imports cleanly into macOS / iOS / Android trust stores
+// (F-090: macOS Keychain rejects Ed25519 roots with "Unknown format in
+// import"). This package mirrors that cutover: Verify accepts an
+// *ecdsa.PublicKey on the P-256 curve and uses ecdsa.VerifyASN1 against
+// SHA-256 of the canonical CBOR payload. No dual-algorithm support —
+// post-Block-79 the Ed25519 root is retired across the substrate.
 package bundle
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -64,7 +75,8 @@ type KnownEndpoint struct {
 
 // EnrollmentBundle is the signed capability. All fields except Signature
 // participate in the signed payload; Signature is produced by the offline
-// CA (Ed25519) over the canonical CBOR encoding of the payload fields.
+// CA (ECDSA P-256) as an ASN.1-encoded ECDSA signature over SHA-256 of
+// the canonical CBOR encoding of the payload fields.
 type EnrollmentBundle struct {
 	Version            uint8           `cbor:"version"`
 	DeviceID           string          `cbor:"device_id"`
@@ -122,21 +134,32 @@ func Unmarshal(data []byte) (*EnrollmentBundle, error) {
 	return &b, nil
 }
 
-// Verify checks the bundle's Ed25519 signature against a trusted public key.
-// Does not check expiry, activation deadline, or CRL — those are the
-// caller's responsibility (CheckExpiry / CheckActivationDeadline).
-func (b *EnrollmentBundle) Verify(pub ed25519.PublicKey) error {
-	if len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("public key wrong size: got %d want %d", len(pub), ed25519.PublicKeySize)
+// Verify checks the bundle's ECDSA P-256 signature against a trusted
+// public key. Mirrors goat-trunk's bundle.EnrollmentBundle.Verify byte-
+// for-byte: SHA-256 hash of the canonical CBOR payload + ASN.1-encoded
+// ECDSA signature. Does not check expiry, activation deadline, or CRL —
+// those are the caller's responsibility (CheckExpiry /
+// CheckActivationDeadline).
+func (b *EnrollmentBundle) Verify(pub *ecdsa.PublicKey) error {
+	if pub == nil {
+		return errors.New("public key is nil")
 	}
-	if len(b.Signature) != ed25519.SignatureSize {
-		return fmt.Errorf("signature wrong size: got %d want %d", len(b.Signature), ed25519.SignatureSize)
+	if pub.Curve == nil || pub.Curve.Params().Name != elliptic.P256().Params().Name {
+		got := "nil"
+		if pub.Curve != nil {
+			got = pub.Curve.Params().Name
+		}
+		return fmt.Errorf("public key curve is %s, want P-256", got)
+	}
+	if len(b.Signature) == 0 {
+		return errors.New("signature is empty")
 	}
 	payload, err := b.Signable()
 	if err != nil {
 		return fmt.Errorf("signable: %w", err)
 	}
-	if !ed25519.Verify(pub, payload, b.Signature) {
+	digest := sha256.Sum256(payload)
+	if !ecdsa.VerifyASN1(pub, digest[:], b.Signature) {
 		return errors.New("signature invalid")
 	}
 	return nil

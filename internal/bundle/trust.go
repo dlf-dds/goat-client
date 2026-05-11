@@ -1,7 +1,8 @@
 package bundle
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -18,33 +19,48 @@ var ErrNoTrustRoots = errors.New("no trust roots configured")
 // any of the configured trust roots.
 var ErrUntrustedBundle = errors.New("bundle signature does not match any trust root")
 
-// TrustRoots is the set of Ed25519 public keys that a daemon will accept as
-// signers of inbound bundles. A daemon typically loads exactly one root —
-// the offline CA's bundle-signing pubkey — but the slice form supports CA
-// rotation: during a rotation window both old and new roots are pinned,
-// and bundles signed by either are accepted.
+// TrustRoots is the set of ECDSA P-256 public keys that a daemon will
+// accept as signers of inbound bundles. A daemon typically loads exactly
+// one root — the offline CA's bundle-signing pubkey — but the slice form
+// supports CA rotation: during a rotation window both old and new roots
+// are pinned, and bundles signed by either are accepted.
 //
 // Wire format on disk: PEM-encoded SubjectPublicKeyInfo blocks
-// (`-----BEGIN PUBLIC KEY-----`), one block per root, concatenated.
+// (`-----BEGIN PUBLIC KEY-----`) OR X.509 CERTIFICATE blocks
+// (`-----BEGIN CERTIFICATE-----`) carrying ECDSA P-256 keys, one block
+// per root, concatenated. Accepting both formats mirrors
+// goat-trunk's wg-cp0-bundle-apply loadCAPubkey (commit dc3944fe) —
+// operators can point at either `ops/enrollment/public-keys/<ca-id>.pem`
+// (raw SPKI) or `ops/enrollment/ca/dev/root-cert.pem` (X.509 cert
+// wrapping the same key, also the Traefik chain anchor) without hitting
+// the "expected PUBLIC KEY, got CERTIFICATE" footgun.
 type TrustRoots struct {
-	keys []ed25519.PublicKey
+	keys []*ecdsa.PublicKey
 }
 
-// NewTrustRoots constructs a TrustRoots set from raw Ed25519 public keys.
-func NewTrustRoots(keys ...ed25519.PublicKey) (*TrustRoots, error) {
+// NewTrustRoots constructs a TrustRoots set from ECDSA P-256 public keys.
+// Returns an error if any key is nil or on a non-P-256 curve.
+func NewTrustRoots(keys ...*ecdsa.PublicKey) (*TrustRoots, error) {
 	tr := &TrustRoots{}
 	for i, k := range keys {
-		if len(k) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("trust root %d: wrong key size: got %d want %d", i, len(k), ed25519.PublicKeySize)
+		if k == nil {
+			return nil, fmt.Errorf("trust root %d: nil public key", i)
 		}
-		tr.keys = append(tr.keys, append(ed25519.PublicKey(nil), k...))
+		if k.Curve == nil || k.Curve.Params().Name != elliptic.P256().Params().Name {
+			got := "nil"
+			if k.Curve != nil {
+				got = k.Curve.Params().Name
+			}
+			return nil, fmt.Errorf("trust root %d: curve is %s, want P-256", i, got)
+		}
+		tr.keys = append(tr.keys, k)
 	}
 	return tr, nil
 }
 
 // LoadTrustRootsFromFile reads a PEM file containing one or more
-// `PUBLIC KEY` blocks and returns the TrustRoots they encode. Each block
-// must be an Ed25519 SubjectPublicKeyInfo.
+// `PUBLIC KEY` or `CERTIFICATE` blocks and returns the TrustRoots they
+// encode. Each block must carry an ECDSA P-256 key.
 func LoadTrustRootsFromFile(path string) (*TrustRoots, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -53,9 +69,12 @@ func LoadTrustRootsFromFile(path string) (*TrustRoots, error) {
 	return LoadTrustRootsFromPEM(data)
 }
 
-// LoadTrustRootsFromPEM parses one or more `PUBLIC KEY` PEM blocks.
+// LoadTrustRootsFromPEM parses one or more `PUBLIC KEY` or `CERTIFICATE`
+// PEM blocks. CERTIFICATE blocks have their SubjectPublicKeyInfo
+// extracted; the cert chain itself is not validated (the offline-CA root
+// is self-signed by definition).
 func LoadTrustRootsFromPEM(data []byte) (*TrustRoots, error) {
-	var keys []ed25519.PublicKey
+	var keys []*ecdsa.PublicKey
 	rest := data
 	for {
 		var block *pem.Block
@@ -63,23 +82,71 @@ func LoadTrustRootsFromPEM(data []byte) (*TrustRoots, error) {
 		if block == nil {
 			break
 		}
-		if block.Type != "PUBLIC KEY" {
-			continue
-		}
-		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		pub, err := publicKeyFromPEMBlock(block)
 		if err != nil {
-			return nil, fmt.Errorf("parse trust root: %w", err)
+			// Skip unknown block types silently (e.g. comments,
+			// "EC PARAMETERS"); fail only on parse errors inside
+			// the expected block types.
+			if errors.Is(err, errSkipBlock) {
+				continue
+			}
+			return nil, err
 		}
-		ed, ok := pub.(ed25519.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("trust root is not an Ed25519 key: %T", pub)
-		}
-		keys = append(keys, ed)
+		keys = append(keys, pub)
 	}
 	if len(keys) == 0 {
-		return nil, errors.New("no PUBLIC KEY blocks found")
+		return nil, errors.New("no PUBLIC KEY or CERTIFICATE blocks carrying ECDSA P-256 keys found")
 	}
 	return &TrustRoots{keys: keys}, nil
+}
+
+// errSkipBlock signals a PEM block whose type we don't recognise; the
+// loader skips it rather than failing the whole file (handles concatenated
+// files that contain ancillary blocks like `EC PARAMETERS`).
+var errSkipBlock = errors.New("pem block skipped")
+
+// publicKeyFromPEMBlock extracts an *ecdsa.PublicKey from either a
+// `PUBLIC KEY` (SPKI) block or a `CERTIFICATE` (X.509) block. Mirrors
+// the loadCAPubkey switch in goat-trunk dc3944fe.
+func publicKeyFromPEMBlock(block *pem.Block) (*ecdsa.PublicKey, error) {
+	switch block.Type {
+	case "PUBLIC KEY":
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse PUBLIC KEY: %w", err)
+		}
+		ecPub, ok := pub.(*ecdsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("PUBLIC KEY is %T, want *ecdsa.PublicKey", pub)
+		}
+		if ecPub.Curve == nil || ecPub.Curve.Params().Name != elliptic.P256().Params().Name {
+			got := "nil"
+			if ecPub.Curve != nil {
+				got = ecPub.Curve.Params().Name
+			}
+			return nil, fmt.Errorf("ECDSA pubkey curve is %s, want P-256", got)
+		}
+		return ecPub, nil
+	case "CERTIFICATE":
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse CERTIFICATE: %w", err)
+		}
+		ecPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("certificate carries %T, want *ecdsa.PublicKey", cert.PublicKey)
+		}
+		if ecPub.Curve == nil || ecPub.Curve.Params().Name != elliptic.P256().Params().Name {
+			got := "nil"
+			if ecPub.Curve != nil {
+				got = ecPub.Curve.Params().Name
+			}
+			return nil, fmt.Errorf("certificate pubkey curve is %s, want P-256", got)
+		}
+		return ecPub, nil
+	default:
+		return nil, errSkipBlock
+	}
 }
 
 // Empty reports whether the trust set has no keys.

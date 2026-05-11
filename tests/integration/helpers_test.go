@@ -4,7 +4,8 @@ package integration
 
 import (
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -97,18 +98,19 @@ type fixture struct {
 	DeviceID        string
 }
 
-// newFixture mints a fresh Ed25519 trust root + a signed EnrollmentBundle
-// valid from now-1h to now+24h, writes both to disk under a short tempdir
-// (sun_path-safe on macOS), and returns the paths the daemon needs.
+// newFixture mints a fresh ECDSA P-256 trust root + a signed
+// EnrollmentBundle valid from now-1h to now+24h, writes both to disk
+// under a short tempdir (sun_path-safe on macOS), and returns the paths
+// the daemon needs.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	dir := shortTempDir(t)
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate ed25519: %v", err)
+		t.Fatalf("generate ecdsa P-256: %v", err)
 	}
-	pubDER, err := x509.MarshalPKIXPublicKey(pub)
+	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatalf("marshal pkix: %v", err)
 	}
@@ -163,17 +165,23 @@ func newFixture(t *testing.T) *fixture {
 	}
 }
 
-// signBundle signs `b` with priv. Mirrors the test-helper Sign defined in
+// signBundle signs `b` with priv using ECDSA P-256 over SHA-256 of the
+// canonical CBOR payload — mirrors the offline CA's sign-flow byte-for-
+// byte (Block 79 cutover) and the test-helper Sign defined in
 // internal/bundle/bundle_test.go (which is package-local and not
 // importable here).
-func signBundle(b *bundle.EnrollmentBundle, priv ed25519.PrivateKey) error {
+func signBundle(b *bundle.EnrollmentBundle, priv *ecdsa.PrivateKey) error {
 	payload, err := b.Signable()
 	if err != nil {
 		return err
 	}
-	sig := ed25519.Sign(priv, payload)
-	if len(sig) != ed25519.SignatureSize {
-		return errors.New("signature wrong size")
+	digest := sha256.Sum256(payload)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
+	if err != nil {
+		return err
+	}
+	if len(sig) == 0 {
+		return errors.New("signature is empty")
 	}
 	b.Signature = sig
 	return nil

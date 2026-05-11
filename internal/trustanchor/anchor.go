@@ -1,7 +1,9 @@
 package trustanchor
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
 	"fmt"
 	"sort"
 	"time"
@@ -9,16 +11,25 @@ import (
 
 // Anchor is one pinned offline-CA root public key with its validity window.
 //
-// PublicKey is the raw 32-byte Ed25519 public half (the same shape
-// crypto/ed25519.Verify expects). Name is the human-readable label that
-// appears in audit logs ("dev-desertbread-ca-2026-04-20"). Issuer is the
+// PublicKey is the parsed *ecdsa.PublicKey on the P-256 curve (post-
+// Block-79 cutover; mirrors goat-trunk's bundle.EnrollmentBundle.Verify
+// signature). Name is the human-readable label that appears in audit
+// logs ("dev-desertbread-ca-ecdsa-2026-05-09"). Issuer is the
 // CA-identity string the offline-CA stamps into bundle.CAID — kept here
 // so a successful Verify can be cross-checked against bundle.CAID by the
 // caller without re-deriving the issuer from the key bytes.
+//
+// SPKI is the raw SubjectPublicKeyInfo (DER) that the embedded data
+// carries; PublicKey is populated by NewSet via x509.ParsePKIXPublicKey.
+// The SPKI bytes are retained so callers can dump or re-emit the
+// canonical on-disk form (the generator emits SPKI rather than
+// reconstructed X/Y big.Int literals because SPKI is the substrate's
+// canonical wire form).
 type Anchor struct {
 	Name       string
 	Issuer     string
-	PublicKey  ed25519.PublicKey
+	PublicKey  *ecdsa.PublicKey
+	SPKI       []byte
 	ValidFrom  time.Time
 	ValidUntil time.Time
 }
@@ -50,19 +61,39 @@ type Set struct {
 }
 
 // NewSet returns a Set containing the supplied anchors. Returns an
-// error if any anchor has the wrong key size, an empty Name, or a
-// ValidUntil that does not strictly follow ValidFrom — caller bugs that
-// would otherwise silently produce a Set that can never verify.
+// error if any anchor has an empty Name, a missing PublicKey + SPKI
+// pair, a non-P-256 curve, or a ValidUntil that does not strictly
+// follow ValidFrom — caller bugs that would otherwise silently produce
+// a Set that can never verify.
+//
+// If PublicKey is nil and SPKI is supplied, NewSet parses the SPKI
+// into PublicKey (the path used by the embedded.go generator). If
+// PublicKey is supplied directly (test helpers), SPKI may be empty
+// and the curve check runs against PublicKey.Curve.
 //
 // The order of anchors is preserved; Verify iterates in insertion order.
 func NewSet(anchors ...Anchor) (*Set, error) {
+	out := make([]Anchor, 0, len(anchors))
 	for i, a := range anchors {
 		if a.Name == "" {
 			return nil, fmt.Errorf("anchor %d: name is empty", i)
 		}
-		if len(a.PublicKey) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("anchor %q: public key wrong size: got %d want %d",
-				a.Name, len(a.PublicKey), ed25519.PublicKeySize)
+		if a.PublicKey == nil {
+			if len(a.SPKI) == 0 {
+				return nil, fmt.Errorf("anchor %q: PublicKey and SPKI both empty", a.Name)
+			}
+			pub, err := parseSPKI(a.SPKI)
+			if err != nil {
+				return nil, fmt.Errorf("anchor %q: parse SPKI: %w", a.Name, err)
+			}
+			a.PublicKey = pub
+		}
+		if a.PublicKey.Curve == nil || a.PublicKey.Curve.Params().Name != elliptic.P256().Params().Name {
+			got := "nil"
+			if a.PublicKey.Curve != nil {
+				got = a.PublicKey.Curve.Params().Name
+			}
+			return nil, fmt.Errorf("anchor %q: ECDSA pubkey curve is %s, want P-256", a.Name, got)
 		}
 		if !a.ValidUntil.After(a.ValidFrom) {
 			return nil, fmt.Errorf("anchor %q: valid_until (%s) must be strictly after valid_from (%s)",
@@ -70,11 +101,26 @@ func NewSet(anchors ...Anchor) (*Set, error) {
 				a.ValidUntil.UTC().Format(time.RFC3339),
 				a.ValidFrom.UTC().Format(time.RFC3339))
 		}
+		out = append(out, a)
 	}
 	return &Set{
-		anchors: append([]Anchor(nil), anchors...),
+		anchors: out,
 		now:     time.Now,
 	}, nil
+}
+
+// parseSPKI decodes SubjectPublicKeyInfo (DER) bytes into an ECDSA P-256
+// public key. Used by NewSet to lazily inflate embedded anchors.
+func parseSPKI(spki []byte) (*ecdsa.PublicKey, error) {
+	pub, err := x509.ParsePKIXPublicKey(spki)
+	if err != nil {
+		return nil, err
+	}
+	ec, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("SPKI is %T, want *ecdsa.PublicKey", pub)
+	}
+	return ec, nil
 }
 
 // Default returns the build-time-embedded Set of pinned anchors.

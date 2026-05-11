@@ -1,9 +1,9 @@
 package trustanchor
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
-	"fmt"
 )
 
 // ErrUntrusted is returned by Verify when no active anchor's public key
@@ -18,14 +18,16 @@ var ErrUntrusted = errors.New("trustanchor: signature not signed by any active a
 // neither sign nor accept bundles until it is upgraded.
 var ErrNoActiveAnchors = errors.New("trustanchor: no active anchor at current time (binary is stale)")
 
-// ErrSignatureSize is returned when the supplied signature is not the
-// 64-byte length crypto/ed25519 produces.
-var ErrSignatureSize = errors.New("trustanchor: signature wrong size")
+// ErrEmptySignature is returned when the supplied signature is empty.
+// ASN.1 ECDSA signatures vary in length (≈70-72 bytes typical for
+// P-256), so we no longer enforce a fixed size — only that something
+// is present for ecdsa.VerifyASN1 to consume.
+var ErrEmptySignature = errors.New("trustanchor: signature is empty")
 
-// Verify checks bundleSig as an Ed25519 signature over bundleBytes
-// against every anchor active at the current wall-clock. Returns the
-// matching anchor on success, or one of [ErrNoActiveAnchors],
-// [ErrSignatureSize], [ErrUntrusted].
+// Verify checks bundleSig as an ECDSA P-256 ASN.1-encoded signature
+// over SHA-256 of bundleBytes against every anchor active at the
+// current wall-clock. Returns the matching anchor on success, or one
+// of [ErrNoActiveAnchors], [ErrEmptySignature], [ErrUntrusted].
 //
 // bundleBytes must be the canonical-CBOR signable payload — typically
 // the output of internal/bundle.EnrollmentBundle.Signable. This package
@@ -33,23 +35,28 @@ var ErrSignatureSize = errors.New("trustanchor: signature wrong size")
 // signed-channel-update payload (ADR 0840 D5 v2) can reuse the same
 // anchor set.
 //
+// Mirrors goat-trunk's bundle.EnrollmentBundle.Verify byte-for-byte
+// (Block 79 cutover, commit 3dd4a765): SHA-256 the payload, ASN.1
+// ECDSA verify against the P-256 pubkey.
+//
 // Rotation behaviour: when the Set carries an old + new anchor whose
 // windows overlap, both are tried in insertion order. The returned
 // anchor identifies which key the bundle was actually signed under so
 // the caller can record the active CA-id in audit logs.
 func (s *Set) Verify(bundleSig []byte, bundleBytes []byte) (*Anchor, error) {
-	if len(bundleSig) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("%w: got %d want %d", ErrSignatureSize, len(bundleSig), ed25519.SignatureSize)
+	if len(bundleSig) == 0 {
+		return nil, ErrEmptySignature
 	}
 	now := s.now().UTC()
 	hasActive := false
+	digest := sha256.Sum256(bundleBytes)
 	for i := range s.anchors {
 		a := &s.anchors[i]
 		if !a.active(now) {
 			continue
 		}
 		hasActive = true
-		if ed25519.Verify(a.PublicKey, bundleBytes, bundleSig) {
+		if ecdsa.VerifyASN1(a.PublicKey, digest[:], bundleSig) {
 			return a, nil
 		}
 	}

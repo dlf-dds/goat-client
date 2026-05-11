@@ -1,7 +1,9 @@
 package main
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -12,18 +14,18 @@ import (
 )
 
 // synthesizeYAML writes a temp anchors.yaml carrying n freshly-generated
-// Ed25519 keys and returns the file path. Each anchor carries a non-
+// ECDSA P-256 keys and returns the file path. Each anchor carries a non-
 // trivial validity window so dates make it through the round-trip.
 func synthesizeYAML(t *testing.T, dir string, n int) string {
 	t.Helper()
 	var b strings.Builder
 	b.WriteString("anchors:\n")
 	for i := 0; i < n; i++ {
-		pub, _, err := ed25519.GenerateKey(nil)
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatalf("GenerateKey: %v", err)
 		}
-		der, err := x509.MarshalPKIXPublicKey(pub)
+		der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 		if err != nil {
 			t.Fatalf("MarshalPKIXPublicKey: %v", err)
 		}
@@ -153,11 +155,11 @@ func TestRunRejectsDuplicateNames(t *testing.T) {
 
 func mustGenPEM(t *testing.T) string {
 	t.Helper()
-	pub, _, err := ed25519.GenerateKey(nil)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatalf("MarshalPKIXPublicKey: %v", err)
 	}

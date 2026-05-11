@@ -17,11 +17,20 @@
 // no timestamps or hostnames. Re-running anchorgen against an unchanged
 // YAML produces an identical embedded.go (verified by the
 // TestAnchorgenDeterministic test in internal/trustanchor).
+//
+// Block 79 cutover: anchors are now ECDSA P-256. The generator extracts
+// the SubjectPublicKeyInfo (DER) from the YAML's PEM block — whether
+// it's a raw `PUBLIC KEY` block or an X.509 `CERTIFICATE` block — and
+// emits the SPKI bytes verbatim into embedded.go. NewSet parses the
+// SPKI back into *ecdsa.PublicKey at package-init time. The detour
+// through SPKI keeps the generated source readable (one byte slice per
+// anchor) and avoids reconstructing X/Y *big.Int literals in code.
 package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
@@ -53,7 +62,7 @@ type anchor struct {
 	issuer     string
 	validFrom  time.Time
 	validUntil time.Time
-	pubkey     ed25519.PublicKey
+	spki       []byte
 }
 
 func main() {
@@ -115,7 +124,7 @@ func decode(in []yamlAnchor) ([]anchor, error) {
 		if !until.After(from) {
 			return nil, fmt.Errorf("anchor %q: valid_until must be strictly after valid_from", a.Name)
 		}
-		pub, err := decodePEM(a.PublicKeyPEM)
+		spki, err := decodePEM(a.PublicKeyPEM)
 		if err != nil {
 			return nil, fmt.Errorf("anchor %q: %w", a.Name, err)
 		}
@@ -124,33 +133,64 @@ func decode(in []yamlAnchor) ([]anchor, error) {
 			issuer:     a.Issuer,
 			validFrom:  from.UTC(),
 			validUntil: until.UTC(),
-			pubkey:     pub,
+			spki:       spki,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out, nil
 }
 
-func decodePEM(s string) (ed25519.PublicKey, error) {
+// decodePEM extracts the SubjectPublicKeyInfo (DER) from the YAML's
+// public_key_pem field. Accepts both `PUBLIC KEY` (raw SPKI) and
+// `CERTIFICATE` (X.509 wrapping the same key) block types — mirrors
+// goat-trunk's wg-cp0-bundle-apply loadCAPubkey (commit dc3944fe). The
+// curve assertion runs at this stage so a bad anchor fails generation
+// rather than runtime.
+func decodePEM(s string) ([]byte, error) {
 	block, _ := pem.Decode([]byte(s))
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block found")
 	}
-	if block.Type != "PUBLIC KEY" {
-		return nil, fmt.Errorf("unexpected PEM block type %q (want PUBLIC KEY)", block.Type)
+	var ec *ecdsa.PublicKey
+	switch block.Type {
+	case "PUBLIC KEY":
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse PKIX key: %w", err)
+		}
+		var ok bool
+		ec, ok = pub.(*ecdsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("key is %T, want *ecdsa.PublicKey", pub)
+		}
+	case "CERTIFICATE":
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse certificate: %w", err)
+		}
+		var ok bool
+		ec, ok = cert.PublicKey.(*ecdsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("certificate carries %T, want *ecdsa.PublicKey", cert.PublicKey)
+		}
+	default:
+		return nil, fmt.Errorf("unexpected PEM block type %q (want PUBLIC KEY or CERTIFICATE)", block.Type)
 	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if ec.Curve == nil || ec.Curve.Params().Name != elliptic.P256().Params().Name {
+		got := "nil"
+		if ec.Curve != nil {
+			got = ec.Curve.Params().Name
+		}
+		return nil, fmt.Errorf("ECDSA pubkey curve is %s, want P-256", got)
+	}
+	// Re-marshal so the embedded SPKI is canonical even if the YAML
+	// carried a syntactically valid but non-canonical encoding —
+	// keeps anchorgen output deterministic across operator workstations.
+	canon, err := x509.MarshalPKIXPublicKey(ec)
 	if err != nil {
-		return nil, fmt.Errorf("parse PKIX key: %w", err)
+		return nil, fmt.Errorf("re-marshal PKIX: %w", err)
 	}
-	ed, ok := pub.(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("key is %T, want ed25519.PublicKey", pub)
-	}
-	if len(ed) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("ed25519 key wrong size: got %d want %d", len(ed), ed25519.PublicKeySize)
-	}
-	return ed, nil
+	return canon, nil
 }
 
 func emit(pkgName string, anchors []anchor) ([]byte, error) {
@@ -160,12 +200,14 @@ func emit(pkgName string, anchors []anchor) ([]byte, error) {
 	fmt.Fprintf(&b, "// to regenerate after editing the YAML descriptor.\n\n")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	fmt.Fprintf(&b, "import \"time\"\n\n")
+	fmt.Fprintf(&b, "// embedded carries the SubjectPublicKeyInfo (DER) for each pinned\n")
+	fmt.Fprintf(&b, "// anchor; NewSet inflates SPKI into *ecdsa.PublicKey at package-init time.\n")
 	fmt.Fprintf(&b, "var embedded = []Anchor{\n")
 	for _, a := range anchors {
 		fmt.Fprintf(&b, "\t{\n")
 		fmt.Fprintf(&b, "\t\tName:       %q,\n", a.name)
 		fmt.Fprintf(&b, "\t\tIssuer:     %q,\n", a.issuer)
-		fmt.Fprintf(&b, "\t\tPublicKey:  []byte{%s},\n", formatBytes(a.pubkey))
+		fmt.Fprintf(&b, "\t\tSPKI:       []byte{%s},\n", formatBytes(a.spki))
 		fmt.Fprintf(&b, "\t\tValidFrom:  %s,\n", formatTime(a.validFrom))
 		fmt.Fprintf(&b, "\t\tValidUntil: %s,\n", formatTime(a.validUntil))
 		fmt.Fprintf(&b, "\t},\n")
