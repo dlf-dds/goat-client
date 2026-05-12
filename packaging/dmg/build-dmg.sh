@@ -47,11 +47,12 @@ sed "s/\${VERSION}/${VERSION}/g" \
     "${PKG_DIR}/Info.plist" \
     > "${APP_DIR}/Contents/Info.plist"
 
-# Icon (Track B asset; tolerate absence in the skeleton CI run).
-if [ -f "internal/ui/assets/AppIcon.icns" ]; then
-    cp internal/ui/assets/AppIcon.icns \
-       "${APP_DIR}/Contents/Resources/AppIcon.icns"
-fi
+# Bundle icon. Info.plist's CFBundleIconFile is "AppIcon.icns" by macOS
+# convention; our generated asset lives next to the other goat-client.*
+# files in internal/ui/assets/ so all four (svg, png, ico, icns) share a
+# name root and a single regen script.
+cp internal/ui/assets/goat-client.icns \
+   "${APP_DIR}/Contents/Resources/AppIcon.icns"
 
 # 2. Build the .pkg payload (daemon binary + LaunchDaemon plist + .app).
 PKG_ROOT="${STAGE_DIR}/pkg-root"

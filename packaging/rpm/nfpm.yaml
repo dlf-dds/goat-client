@@ -56,7 +56,6 @@ contents:
     dst: /usr/share/icons/hicolor/256x256/apps/goat-client.png
     file_info:
       mode: 0644
-    type: ghost
 
   - src: ./packaging/rpm/sysconfig/goat-client
     dst: /etc/sysconfig/goat-client
