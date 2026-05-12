@@ -49,6 +49,40 @@ worktree per track via `/iso enter <track-name>` (creates
 target the worktree path, never the master checkout. The master
 checkout is read-only — same discipline as goat-trunk's ADR 0013.
 
+## Post-merge closeout
+
+Once a track's PR is merged — whether you merged it via `gh pr merge
+--squash --delete-branch` or captain merged it from another session —
+the per-track branch and worktree are dead weight. They accumulate
+fast across parallel-track work, so close them out at end-of-session.
+
+**Always prompt the operator before deleting branches or removing
+worktrees. Closeout is destructive and must not run on the agent's
+own initiative.**
+
+Suggested closeout flow at end of session (or at the start of the
+next session if the PR was merged after you left):
+
+1. Confirm merge: `gh pr view <#> --json state,mergedAt`.
+2. **Propose** to the operator, naming what will be deleted:
+   "PR #<#> is merged. OK to delete remote branch
+   `track/<name>` and remove worktree
+   `.claude/worktrees/<name>/`?" Wait for explicit OK.
+3. On OK:
+   - `git push origin --delete track/<name>` (no-op if GitHub's
+     squash-merge setting already deleted the remote branch; `gh pr
+     merge --delete-branch` does this for you when *you* merge).
+   - From the master checkout (not from inside the worktree
+     itself), `git worktree remove .claude/worktrees/<name>`.
+   - `git branch -D track/<name>` if a local ref remains.
+4. If multiple worktrees are stale (common after a captain merges a
+   batch), enumerate them in the prompt and confirm one OK covers
+   the batch — don't escalate scope past what the operator
+   authorized.
+
+Refuse to remove a worktree with uncommitted changes; that's the
+operator's call (commit, stash, or discard), not yours.
+
 ## Source of truth for forks
 
 netbird upstream pinned at `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe`.
