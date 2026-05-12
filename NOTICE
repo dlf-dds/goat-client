@@ -19,7 +19,7 @@ following packages were forked from upstream netbird and adapted:
                        status pane, and diagnostics pane authored fresh
                        against the goat-client IPC contract. No source
                        files copied verbatim; no netbird-trademarked icon
-                       assets carried over (tray icons generated at init).
+                       assets carried over.
   - client/grpc/       gRPC dialer (carries the embed-CA + ServerName-port-strip patch from goat fork)
   - client/proto/      gRPC daemon IPC (reshaped — mesh RPCs stripped)
 
@@ -39,3 +39,14 @@ Stripped from upstream (NOT in this repo):
   - client/firewall/ ACL pieces (mesh-specific — kept platform detection only)
 
 For per-file change details, see the git history under client/.
+
+----
+
+Brand assets
+------------
+
+The goat-client mark — a green ram-head silhouette — and all rendered
+sizes (PNG / ICO / ICNS) under internal/ui/assets/ are original works
+of dlf-dds, distributed under the same Apache-2.0 license as the rest
+of this repository. The mark is regenerated from internal/ui/assets/
+goat-logo.svg via scripts/gen-icons.sh.
