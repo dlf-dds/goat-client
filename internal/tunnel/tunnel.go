@@ -317,21 +317,44 @@ func FromBundle(b *bundle.EnrollmentBundle) (Config, error) {
 		if e.Kind != bundle.KindRelay {
 			continue
 		}
+		// AllowedIPs derivation matches goat-trunk's canonical reference
+		// consumer (ops/enrollment/cmd/wg-cp0-bundle-apply): the
+		// per-relay MeshAddr/32 is ALWAYS present, and the bundle's
+		// AllowedIPs[] field — populated from
+		// `bundle-create --first-relay-route-subnet` — is ADDITIVE on
+		// top of it. The first-draft override-only reading dropped the
+		// /32 when AllowedIPs[] was non-empty; that caused real-protocol
+		// lab smoke to fail at [phase=probe] because the relay-side
+		// cryptokey-routing path requires the runner peer to send
+		// traffic with the relay's /32 AllowedIPs as part of its WG
+		// peer config (`wg-cp0-bundle-apply --dry-run` renders both,
+		// confirmed 2026-05-12 against the live bundle).
 		var allowed []netip.Prefix
-		if len(e.AllowedIPs) > 0 {
-			for _, s := range e.AllowedIPs {
-				p, err := netip.ParsePrefix(s)
-				if err != nil {
-					return Config{}, fmt.Errorf("tunnel: parse allowed_ips %q: %w", s, err)
-				}
-				allowed = append(allowed, p)
-			}
-		} else if e.MeshAddr != "" {
+		if e.MeshAddr != "" {
 			ip, err := netip.ParseAddr(e.MeshAddr)
 			if err != nil {
 				return Config{}, fmt.Errorf("tunnel: parse mesh_addr %q: %w", e.MeshAddr, err)
 			}
-			allowed = []netip.Prefix{netip.PrefixFrom(ip, ip.BitLen())}
+			allowed = append(allowed, netip.PrefixFrom(ip, ip.BitLen()))
+		}
+		for _, s := range e.AllowedIPs {
+			p, err := netip.ParsePrefix(s)
+			if err != nil {
+				return Config{}, fmt.Errorf("tunnel: parse allowed_ips %q: %w", s, err)
+			}
+			// Skip exact duplicates of the MeshAddr/32 — operators may
+			// explicitly include `mesh/32` in AllowedIPs[] as an
+			// idempotent restatement; we don't want it twice.
+			dup := false
+			for _, p2 := range allowed {
+				if p.String() == p2.String() {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				allowed = append(allowed, p)
+			}
 		}
 		return Config{
 			InterfaceName: DefaultInterfaceName,

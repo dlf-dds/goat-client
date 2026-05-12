@@ -72,10 +72,16 @@ type KnownEndpoint struct {
 	// this when AllowedIPs (below) is empty.
 	MeshAddr string `cbor:"mesh_addr,omitempty"`
 
-	// AllowedIPs, when non-empty, OVERRIDES the default `MeshAddr/32`
-	// derivation in the wg-cp0 conf renderer for this endpoint's [Peer]
-	// block. Each entry is a CIDR string. Bundle-issuance side populates
-	// this from the operator flag --first-relay-route-subnet.
+	// AllowedIPs are ADDITIVE to the default `MeshAddr/32` derivation
+	// in the wg-cp0 conf renderer for this endpoint's [Peer] block.
+	// Each entry is a CIDR string. Bundle-issuance side populates this
+	// from the operator flag --first-relay-route-subnet; a typical
+	// production bundle carries `MeshAddr="198.18.0.3"` (relay-isr's
+	// own mesh IP) plus `AllowedIPs=["198.18.0.0/24"]` (the rest of
+	// the mesh reachable through that relay), and tunnel.FromBundle
+	// emits the merged set `[198.18.0.3/32, 198.18.0.0/24]` —
+	// matching goat-trunk's canonical reference consumer
+	// (ops/enrollment/cmd/wg-cp0-bundle-apply --dry-run).
 	AllowedIPs []string `cbor:"allowed_ips,omitempty"`
 }
 
