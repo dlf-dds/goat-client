@@ -6,13 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/netip"
 	"os"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/conn"
-	wgdevice "golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -24,9 +21,9 @@ import (
 // extracts from its packetFlow. On Android, fd is the file descriptor
 // returned by VpnService.Builder.establish() (surfaced via
 // TunAdapter.ConfigureInterface). In both cases we dup the fd, mark it
-// non-blocking, wrap it as a wireguard-go tun.Device, drive the
-// userspace WG device with the supplied Config, then block until ctx is
-// cancelled.
+// non-blocking, wrap it as a wireguard-go tun.Device, then hand the
+// wrapped device off to [runMobileEngine] which drives the userspace
+// WG device and blocks until ctx is cancelled.
 //
 // dnsServers is advisory at the engine layer — actual application happens
 // platform-side (NEDNSSettings via DnsManager on iOS, VpnService.Builder
@@ -47,6 +44,15 @@ import (
 // default-route VPN policy will eventually need the protect bridge. The
 // AndroidProtectSocket setter remains live in the SDK package so a
 // follow-up custom-bind PR can wire it without an SDK API break.
+//
+// Refactor note (track/mobile-realprotocol-test): the engine half of
+// this function — wgdevice construction + UAPI apply + Up + block on
+// ctx.Done + Close — moved into [runMobileEngine] in
+// runmobile_engine.go (no build tag) so an integration test on desktop
+// can pass a netstack-backed tun.Device into the same code path the
+// mobile shells exercise and assert end-to-end handshake against an
+// in-process WG peer. The public signature of RunOnMobile is unchanged
+// — both gomobile facades call it the same way.
 func RunOnMobile(ctx context.Context, fd int, ifaceName string, cfg *Config, dnsServers []netip.Addr) error {
 	if cfg == nil {
 		return errors.New("tunnel: nil config")
@@ -78,42 +84,7 @@ func RunOnMobile(ctx context.Context, fd int, ifaceName string, cfg *Config, dns
 		_ = unix.Close(dupFd)
 		return fmt.Errorf("tunnel: wrap tun fd: %w", err)
 	}
-	closed := false
-	defer func() {
-		if !closed {
-			_ = tunDev.Close()
-		}
-	}()
 
-	logger := wgdevice.NewLogger(wgdevice.LogLevelError, fmt.Sprintf("(%s) ", ifaceName))
-	dev := wgdevice.NewDevice(tunDev, conn.NewDefaultBind(), logger)
-
-	uapi, err := buildUAPI(*cfg)
-	if err != nil {
-		dev.Close()
-		closed = true
-		return fmt.Errorf("tunnel: build uapi: %w", err)
-	}
-	if err := dev.IpcSet(uapi); err != nil {
-		dev.Close()
-		closed = true
-		return fmt.Errorf("tunnel: apply uapi: %w", err)
-	}
-	if err := dev.Up(); err != nil {
-		dev.Close()
-		closed = true
-		return fmt.Errorf("tunnel: device up: %w", err)
-	}
-
-	if len(dnsServers) > 0 {
-		log.Printf("tunnel: %s up; dns=%v (host-side applied via VPN service)", ifaceName, dnsServers)
-	} else {
-		log.Printf("tunnel: %s up", ifaceName)
-	}
-
-	<-ctx.Done()
-
-	dev.Close()
-	closed = true
-	return nil
+	// runMobileEngine takes ownership of tunDev and closes it on exit.
+	return runMobileEngine(ctx, tunDev, ifaceName, cfg, dnsServers)
 }

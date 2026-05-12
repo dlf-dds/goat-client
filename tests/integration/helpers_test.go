@@ -1,4 +1,4 @@
-//go:build integration || realprotocol
+//go:build integration || realprotocol || mobile_realprotocol
 
 package integration
 

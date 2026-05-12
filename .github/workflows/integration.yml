@@ -51,3 +51,12 @@ jobs:
         # Build-tag compiles cleanly; tests skip when env unset, which is
         # the expected state on PR runs (lab access is captain-side).
         run: go test -tags realprotocol -count=1 -v -run=TestRealProtocol ./tests/integration/...
+
+      - name: go test -tags mobile_realprotocol (in-process mobile-engine handshake)
+        # Hermetic real-protocol test for the mobile-tunnel wireup:
+        # stands up two in-process wireguard-go devices on netstack tuns,
+        # signs + verifies an EnrollmentBundle through the real import
+        # pipeline, drives runMobileEngine end-to-end, asserts handshake
+        # completes via ICMP-echo round-trip. No env / no lab needed —
+        # always runs on every PR + push.
+        run: go test -tags mobile_realprotocol -count=1 -v -run=TestMobile -timeout 60s ./tests/integration/...
