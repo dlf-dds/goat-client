@@ -107,7 +107,16 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           set -o pipefail
-          go test -tags=realprotocol -count=1 -v -timeout 8m ./tests/integration/... 2>&1 | tee /tmp/realprotocol.log
+          # TUN device creation requires CAP_NET_ADMIN. GitHub-hosted
+          # runners run the workflow user as non-root; without sudo the
+          # daemon subprocess's `tun.CreateTUN` returns EPERM (surfaces
+          # as `[phase=connect] create TUN wg-cp0: operation not
+          # permitted`). The test harness spawns the daemon, so the
+          # whole `go test` invocation runs under sudo. --preserve-env
+          # carries the secrets-injected env vars + the setup-go PATH
+          # so `go` and the runner-managed module cache resolve.
+          sudo --preserve-env=PATH,GOPATH,GOAT_LAB_BUNDLE_PATH,GOAT_LAB_TRUST_ROOTS_PATH,GOAT_LAB_TARGET_IP,GOAT_LAB_PROBE_PORT,CGO_ENABLED \
+            go test -tags=realprotocol -count=1 -v -timeout 8m ./tests/integration/... 2>&1 | tee /tmp/realprotocol.log
 
       - name: Phase summary
         if: ${{ always() }}
