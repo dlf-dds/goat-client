@@ -54,6 +54,7 @@ func main() {
 	}, "\n") + "\n")
 	must(dev.IpcSet(uapi))
 	must(dev.Up())
+	//nolint:forbidigo // operator-facing smoke tool; stdout is the interface
 	fmt.Printf("smoke-endpoint listening on :%d, peer=%s\n", *port, *clientPubB64)
 
 	// Poll the device's stats every 2s and emit handshake events.
@@ -71,8 +72,11 @@ func main() {
 				}
 				v := line[len("last_handshake_time_sec="):]
 				var sec int64
-				fmt.Sscanf(v, "%d", &sec)
+				if _, err := fmt.Sscanf(v, "%d", &sec); err != nil {
+					continue
+				}
 				if sec > 0 && sec != last {
+					//nolint:forbidigo // operator-facing smoke tool; stdout is the interface
 					fmt.Printf("HANDSHAKE %s\n", time.Unix(sec, 0).Format(time.RFC3339))
 					last = sec
 				}

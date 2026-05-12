@@ -83,6 +83,7 @@ func main() {
 	full, err := b.Marshal()
 	must(err, "marshal")
 	must(os.WriteFile(*out, full, 0o600), "write")
+	//nolint:forbidigo // operator-facing smoke tool; stdout is the interface
 	fmt.Printf("wrote %s (%d bytes, endpoint=%s)\n", *out, len(full), *endpointAddr)
 }
 
