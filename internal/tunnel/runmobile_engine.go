@@ -1,3 +1,15 @@
+//go:build ios || android || mobile_realprotocol
+
+// Build tag note: runMobileEngine is exercised by the mobile build
+// targets (ios / android via RunOnMobile) and by the desktop
+// integration test (mobile_realprotocol via RunMobileEngineForTest).
+// It has no caller under the default desktop build; including the
+// `mobile_realprotocol` tag here keeps the symbol present in the
+// build matrix where it's actually used, and prevents
+// `golangci-lint unused` from flagging it on the default-build path.
+// The implementation is fully platform-agnostic — the build tag is a
+// reachability concern, not a portability one.
+
 package tunnel
 
 import (
