@@ -34,8 +34,15 @@ type mainWindow struct {
 	pollCancel  context.CancelFunc
 }
 
+// goatAppIconResource is the Fyne resource handed to a.SetIcon / w.SetIcon
+// so the window title bar, macOS dock, and Linux taskbar all show the
+// goat mark. Built once from the asset embedded in icons.go.
+var goatAppIconResource = fyne.NewStaticResource("goat-client", goatAppIconPNG)
+
 func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
+	a.SetIcon(goatAppIconResource)
 	w := a.NewWindow("goat-client")
+	w.SetIcon(goatAppIconResource)
 	w.Resize(fyne.NewSize(640, 480))
 
 	mw := &mainWindow{
@@ -185,16 +192,8 @@ func (m *mainWindow) toggleConnection() {
 }
 
 // stateColor maps an IPC state to the indicator-circle fill colour. Same
-// palette as the systray icon (see icons.go).
+// palette as the systray icon — delegates to stateRGBA in icons.go so the
+// dot and the tray cannot drift.
 func stateColor(s ipc.State) color.Color {
-	switch s {
-	case ipc.StateConnected:
-		return color.RGBA{R: 0x2c, G: 0xa0, B: 0x2c, A: 0xff}
-	case ipc.StateConnecting:
-		return color.RGBA{R: 0xe6, G: 0x9f, B: 0x00, A: 0xff}
-	case ipc.StateError:
-		return color.RGBA{R: 0xc0, G: 0x39, B: 0x2b, A: 0xff}
-	default:
-		return color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
-	}
+	return stateRGBA(s)
 }

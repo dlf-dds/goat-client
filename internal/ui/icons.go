@@ -6,14 +6,27 @@ import (
 	"image/color"
 	"image/png"
 
+	_ "embed"
+
 	"github.com/dlf-dds/goat-client/internal/ipc"
 )
 
-// Tray icons are generated at init from solid-color filled circles. We do
-// this rather than checking in PNG/ICO assets so the package stays
-// self-contained and so no netbird-trademarked icon art needs preserving.
-// The convention follows snitch-app design doc §3: green = healthy,
-// amber = transitional, red = error, gray = idle/disconnected.
+// Tray icons are the goat-client ram-head silhouette tinted by state.
+// One source PNG (the silhouette with its alpha channel intact) is embedded
+// and at init time we produce one tinted variant per state — mirrors the
+// netbird upstream pattern of swapping the tray icon on state change, but
+// with a single source asset rather than per-state hand-edited PNGs.
+//
+// "Connected" uses the logo's own green (#20964f) so the healthy state
+// matches the brand mark literally; transitional / error / idle states
+// keep the standard semantic palette (amber / red / gray).
+
+//go:embed assets/goat-tray.png
+var goatTrayPNG []byte
+
+//go:embed assets/goat-client.png
+var goatAppIconPNG []byte
+
 var (
 	iconDisconnected []byte
 	iconConnecting   []byte
@@ -22,10 +35,18 @@ var (
 )
 
 func init() {
-	iconDisconnected = renderTrayIcon(color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff})
-	iconConnecting = renderTrayIcon(color.RGBA{R: 0xe6, G: 0x9f, B: 0x00, A: 0xff})
-	iconConnected = renderTrayIcon(color.RGBA{R: 0x2c, G: 0xa0, B: 0x2c, A: 0xff})
-	iconError = renderTrayIcon(color.RGBA{R: 0xc0, G: 0x39, B: 0x2b, A: 0xff})
+	mask, err := png.Decode(bytes.NewReader(goatTrayPNG))
+	if err != nil {
+		iconDisconnected = solidSwatch(stateRGBA(ipc.StateDisconnected))
+		iconConnecting = solidSwatch(stateRGBA(ipc.StateConnecting))
+		iconConnected = solidSwatch(stateRGBA(ipc.StateConnected))
+		iconError = solidSwatch(stateRGBA(ipc.StateError))
+		return
+	}
+	iconDisconnected = tintMask(mask, stateRGBA(ipc.StateDisconnected))
+	iconConnecting = tintMask(mask, stateRGBA(ipc.StateConnecting))
+	iconConnected = tintMask(mask, stateRGBA(ipc.StateConnected))
+	iconError = tintMask(mask, stateRGBA(ipc.StateError))
 }
 
 // iconForState picks the tray icon byte buffer matching `state`.
@@ -42,32 +63,49 @@ func iconForState(state ipc.State) []byte {
 	}
 }
 
-// renderTrayIcon returns a 22x22 PNG with a filled circle of `c` on
-// transparent background. 22 px matches the macOS template-icon target
-// size and downscales cleanly on Linux/Windows trays.
-func renderTrayIcon(c color.RGBA) []byte {
-	const size = 22
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	cx, cy := float64(size-1)/2, float64(size-1)/2
-	r := float64(size)/2 - 1.5
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			dx, dy := float64(x)-cx, float64(y)-cy
-			d := dx*dx + dy*dy
-			if d <= r*r {
-				img.Set(x, y, c)
-			}
+// stateRGBA returns the tray-tint RGBA for `s`. Kept in sync with
+// stateColor() in window.go so the indicator dot and the tray icon
+// agree on colour.
+func stateRGBA(s ipc.State) color.RGBA {
+	switch s {
+	case ipc.StateConnected:
+		return color.RGBA{R: 0x20, G: 0x96, B: 0x4f, A: 0xff} // logo green
+	case ipc.StateConnecting:
+		return color.RGBA{R: 0xe6, G: 0x9f, B: 0x00, A: 0xff}
+	case ipc.StateError:
+		return color.RGBA{R: 0xc0, G: 0x39, B: 0x2b, A: 0xff}
+	default:
+		return color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
+	}
+}
+
+// tintMask returns a PNG of `mask` recoloured so every pixel's RGB is
+// replaced by c's RGB while the source alpha is preserved — silhouette
+// in the requested colour with clean antialiased edges.
+func tintMask(mask image.Image, c color.RGBA) []byte {
+	b := mask.Bounds()
+	out := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, _, _, a := mask.At(x, y).RGBA()
+			a8 := uint8(a >> 8)
+			out.SetRGBA(x, y, color.RGBA{R: c.R, G: c.G, B: c.B, A: a8})
 		}
 	}
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		// init-time encode of a tiny in-memory image cannot fail
-		// outside of OOM; if it does, fall through with a 1x1 swatch
-		// rather than panic so the tray still surfaces something.
-		fallback := image.NewRGBA(image.Rect(0, 0, 1, 1))
-		fallback.Set(0, 0, c)
-		buf.Reset()
-		_ = png.Encode(&buf, fallback)
+	if err := png.Encode(&buf, out); err != nil {
+		return solidSwatch(c)
 	}
+	return buf.Bytes()
+}
+
+// solidSwatch produces a 1x1 PNG of c as a last-resort fallback if the
+// embedded silhouette fails to decode — every systray library accepts a
+// non-empty PNG and surfaces *something* rather than no icon at all.
+func solidSwatch(c color.RGBA) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, c)
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
 	return buf.Bytes()
 }
