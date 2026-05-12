@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +125,8 @@ func connectAndProbe(t *testing.T, d *daemonProc, targetIP, probePort string, ha
 		return fmt.Errorf("[phase=handshake] no completion within %ds; final_status=%+v", handshakeTimeoutSec, lastStatus)
 	}
 
+	dumpRunnerState(t, "wg-cp0", targetIP)
+
 	probeAddr := net.JoinHostPort(targetIP, probePort)
 	conn, err := net.DialTimeout("tcp", probeAddr, time.Duration(probeTimeoutSec)*time.Second)
 	if err != nil {
@@ -130,6 +135,54 @@ func connectAndProbe(t *testing.T, d *daemonProc, targetIP, probePort string, ha
 	_ = conn.Close()
 	t.Logf("probe ok: tcp connect %s via wg-cp0 succeeded within %ds", probeAddr, probeTimeoutSec)
 	return nil
+}
+
+// dumpRunnerState captures the runner's view of the wg-cp0 tunnel right
+// before the probe phase. Goal: when probe fails with "no route to host"
+// or similar, the log has enough state to tell whether the client-side
+// kernel routes are installed, whether wireguard-go's cryptokey routing
+// has both AllowedIPs prefixes, and whether the relay-isr mesh address
+// (which is in AllowedIPs as MeshAddr/32) is reachable through the
+// tunnel even when the actual probe target isn't. That triangulates
+// where the break is: runner-local vs. relay-side IP forwarding vs.
+// downstream peer config.
+//
+// Best-effort: every command is logged with stderr on error but we don't
+// fail the test if a diagnostic exec fails (e.g. wg not installed in the
+// runner image). Linux-only — the realprotocol smoke runs on
+// ubuntu-latest only, but we runtime-gate to keep the helper safe to
+// call on macOS dev boxes.
+func dumpRunnerState(t *testing.T, ifaceName, targetIP string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	cmds := [][]string{
+		{"ip", "-4", "route", "show", "table", "all"},
+		{"ip", "-4", "addr", "show", "dev", ifaceName},
+		{"wg", "show", ifaceName},
+		// Relay-isr mesh address is in AllowedIPs as MeshAddr/32 (per
+		// the canonical bundle layout for the first cp-relay endpoint).
+		// If this ping works but the targetIP one doesn't, the break is
+		// on the relay's outbound side (forwarding policy, peer table,
+		// or destination peer config). If neither works, the break is
+		// our side (no route installed, or WG cryptokey routing
+		// missing the prefix).
+		{"ping", "-c1", "-W2", "198.18.0.3"},
+		{"ping", "-c1", "-W2", targetIP},
+	}
+	for _, c := range cmds {
+		out, err := exec.Command(c[0], c[1:]...).CombinedOutput()
+		label := c[0]
+		if len(c) > 1 {
+			label = c[0] + " " + c[1]
+		}
+		if err != nil {
+			t.Logf("diagnostic [%s]: err=%v output=%s", label, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		t.Logf("diagnostic [%s]:\n%s", label, strings.TrimSpace(string(out)))
+	}
 }
 
 func envInt(key string, fallback int) int {
