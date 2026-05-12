@@ -74,7 +74,8 @@ Run locally (assuming you have lab access):
 ```bash
 export GOAT_LAB_BUNDLE_PATH=/path/to/lab.bundle.cbor
 export GOAT_LAB_TRUST_ROOTS_PATH=/path/to/lab-trust-roots.pem
-export GOAT_LAB_TARGET_IP=198.18.0.11
+export GOAT_LAB_TARGET_IP=198.18.0.1     # kwt-aj-A — already enrolled, runs Traefik
+export GOAT_LAB_PROBE_PORT=443           # Traefik on kwt-aj-A
 go test -tags realprotocol -count=1 -v ./tests/integration/...
 ```
 

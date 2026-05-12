@@ -98,6 +98,10 @@ jobs:
           GOAT_LAB_BUNDLE_PATH: ${{ steps.stage.outputs.bundle_path }}
           GOAT_LAB_TRUST_ROOTS_PATH: ${{ steps.stage.outputs.trust_path }}
           GOAT_LAB_TARGET_IP: ${{ steps.stage.outputs.target_ip }}
+          # Probe kwt-aj-A's Traefik on 443 (per captain comment on #16,
+          # 2026-05-11). Test default is 80; LAB_TARGET_IP=198.18.0.1
+          # routes through the wg-cp0 tunnel to a live Traefik listener.
+          GOAT_LAB_PROBE_PORT: "443"
           # CGO disabled to match Track A's daemon build; the test
           # harness rebuilds cmd/goat-clientd on the runner.
           CGO_ENABLED: "0"
