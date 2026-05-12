@@ -42,7 +42,6 @@ class GoatVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var engineJob: Job? = null
-    private var tunAdapter: TunAdapterImpl? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -61,9 +60,11 @@ class GoatVpnService : VpnService() {
         ensureNotificationChannel()
         startForegroundCompat(buildNotification(getString(R.string.vpn_notification_text_connecting)))
 
-        val adapter = TunAdapterImpl(this)
-        tunAdapter = adapter
-        val client = GoatClient.getOrCreate(applicationContext, adapter)
+        // Attach this service to the process-wide TunAdapter so that the
+        // engine's subsequent configureInterface / protectSocket calls
+        // route through VpnService.Builder / VpnService.protect instead
+        // of the noop fallback the activity creates during importBundle.
+        val client = GoatClient.acquireForVpnService(applicationContext, this)
 
         engineJob = scope.launch {
             try {
@@ -85,13 +86,13 @@ class GoatVpnService : VpnService() {
     private fun stopEngine() {
         try {
             // GoatClient is the singleton holder; .stop() is idempotent.
-            GoatClient.getOrCreateTransient(applicationContext).stop()
+            GoatClient.get(applicationContext).stop()
         } catch (t: Throwable) {
             Log.w(TAG, "engine stop failed", t)
         }
         engineJob?.cancel()
         engineJob = null
-        tunAdapter = null
+        GoatClient.releaseVpnService()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

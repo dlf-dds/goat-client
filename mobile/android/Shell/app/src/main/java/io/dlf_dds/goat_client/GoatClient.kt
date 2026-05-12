@@ -1,6 +1,7 @@
 package io.dlf_dds.goat_client
 
 import android.content.Context
+import android.net.VpnService
 import android.os.Build
 import io.dlf_dds.goat_client.gomobile.goatclient.Client as GoClient
 import io.dlf_dds.goat_client.gomobile.goatclient.Goatclient
@@ -11,31 +12,40 @@ import io.dlf_dds.goat_client.gomobile.goatclient.Goatclient
  * The Go-side Client is intentionally process-singleton: it owns the
  * wg-cp0 engine context, the imported-bundle invariants, and the
  * SetAndroidProtectSocketFn callback. Multiple instances would race
- * on those; the Kotlin shell creates exactly one via [getOrCreate].
+ * on those; the Kotlin shell creates exactly one through this object.
  *
- * GoatVpnService owns the long-running engine lifecycle (Run / Stop);
- * MainActivity uses this for short-lived calls (importBundle, status
- * polls). The [TunAdapterImpl] passed to NewClient is held by
- * GoatVpnService — the activity creates a "noop" adapter for its
- * brief lifetime if no service is running, which is fine because
- * importBundle and tunnelStatus do not call into the adapter.
+ * Lifecycle gotcha (fixed 2026-05-12): the singleton's TunAdapter is
+ * also process-wide, but its inner [VpnService] is short-lived (only
+ * exists while [GoatVpnService] is running). The earlier
+ * `getOrCreate(ctx, freshAdapter)` shape returned the cached client
+ * AND its cached adapter — so a VpnService that arrived AFTER the
+ * activity had already kicked off importBundle (which materialised
+ * the singleton via [getOrCreateTransient]) couldn't get its real
+ * [VpnService] into the Go-side path. The engine then called into
+ * the noop adapter and failed with `configureInterface called from
+ * no-op adapter`. The fix: keep one process-wide [TunAdapterImpl] and
+ * let [GoatVpnService] swap its inner service in/out via attach/detach.
  */
 object GoatClient {
 
     @Volatile
     private var instance: GoClient? = null
 
+    @Volatile
+    private var adapter: TunAdapterImpl? = null
+
     @Synchronized
-    fun getOrCreate(ctx: Context, tunAdapter: TunAdapterImpl): GoClient {
+    private fun getOrCreateClient(ctx: Context): GoClient {
         instance?.let { return it }
+        val ad = TunAdapterImpl(service = null).also { adapter = it }
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         val client = Goatclient.newClient(
             Build.VERSION.SDK_INT.toLong(),  // gomobile maps Go `int` → Java `long`
             deviceName,
             BuildConfigVersion.NAME,
-            tunAdapter,                 // TunAdapter
-            tunAdapter,                 // IFaceDiscover (same impl)
-            tunAdapter,                 // NetworkChangeListener (same impl)
+            ad,                         // TunAdapter
+            ad,                         // IFaceDiscover (same impl)
+            ad,                         // NetworkChangeListener (same impl)
         )
         client.configure(PlatformFilesImpl(ctx.applicationContext))
         instance = client
@@ -43,23 +53,38 @@ object GoatClient {
     }
 
     /**
-     * Returns the live engine if one exists, else creates a transient
-     * client backed by a no-op adapter. Used by the activity for cheap
-     * read-only calls (importBundle, tunnelStatus) that don't depend on
-     * the VpnService being active.
+     * Returns the live engine, creating it on first call. Suitable for
+     * activity-side calls (importBundle, tunnelStatus) that don't depend
+     * on a running VpnService.
      */
     @Synchronized
-    fun getOrCreateTransient(ctx: Context): GoClient {
-        instance?.let { return it }
-        return getOrCreate(ctx, TunAdapterImpl.noop())
+    fun get(ctx: Context): GoClient = getOrCreateClient(ctx)
+
+    /**
+     * Returns the live engine with the current [VpnService] swapped into
+     * its [TunAdapter] so that subsequent `Client.run` calls can build
+     * the tunnel via [VpnService.Builder] and protect the outer wg
+     * socket. Called by [GoatVpnService.onStartCommand].
+     */
+    @Synchronized
+    fun acquireForVpnService(ctx: Context, svc: VpnService): GoClient {
+        val client = getOrCreateClient(ctx)
+        adapter?.attachService(svc)
+        return client
+    }
+
+    /** Called by [GoatVpnService.onDestroy] to release the service ref. */
+    @Synchronized
+    fun releaseVpnService() {
+        adapter?.detachService()
     }
 
     fun importBundle(ctx: Context, bytes: ByteArray) {
-        getOrCreateTransient(ctx).importBundle(bytes)
+        get(ctx).importBundle(bytes)
     }
 
     fun tunnelStatus(ctx: Context): String =
-        getOrCreateTransient(ctx).tunnelStatus
+        get(ctx).tunnelStatus
 }
 
 /**

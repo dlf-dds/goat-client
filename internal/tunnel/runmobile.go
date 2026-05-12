@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/tun"
 )
 
 // RunOnMobile is the single entry point both gomobile shells (Track C iOS,
@@ -75,11 +73,7 @@ func RunOnMobile(ctx context.Context, fd int, ifaceName string, cfg *Config, dns
 	if err != nil {
 		return fmt.Errorf("tunnel: dup tun fd: %w", err)
 	}
-	if err := unix.SetNonblock(dupFd, true); err != nil {
-		_ = unix.Close(dupFd)
-		return fmt.Errorf("tunnel: set tun fd nonblock: %w", err)
-	}
-	tunDev, err := tun.CreateTUNFromFile(os.NewFile(uintptr(dupFd), "/dev/tun"), mtu)
+	tunDev, err := wrapTunFD(dupFd, mtu)
 	if err != nil {
 		_ = unix.Close(dupFd)
 		return fmt.Errorf("tunnel: wrap tun fd: %w", err)

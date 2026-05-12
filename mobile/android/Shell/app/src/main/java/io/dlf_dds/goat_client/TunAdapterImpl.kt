@@ -37,8 +37,29 @@ import java.net.NetworkInterface
  * the operations we use (protect/Builder are documented as such).
  */
 class TunAdapterImpl(
-    private val service: VpnService?,
+    @Volatile private var service: VpnService?,
 ) : TunAdapter, IFaceDiscover, NetworkChangeListener {
+
+    /**
+     * Late-binds the [VpnService] backing this adapter. Called by
+     * [GoatVpnService.onStartCommand] when the service comes up after
+     * [MainActivity] has already created the process-singleton
+     * [GoatClient] with a noop adapter for its short-lived
+     * importBundle / tunnelStatus calls. Without this seam, the
+     * singleton would stay wired to the noop and Connect would fail
+     * with "called from no-op adapter" the first time the engine tried
+     * to build the VPN tunnel.
+     */
+    @Synchronized
+    fun attachService(svc: VpnService) {
+        service = svc
+    }
+
+    /** Called by [GoatVpnService.onDestroy] so we don't leak the service. */
+    @Synchronized
+    fun detachService() {
+        service = null
+    }
 
     /**
      * Called by the Go engine after the bundle is parsed; we build
@@ -121,13 +142,6 @@ class TunAdapterImpl(
 
     companion object {
         private const val TAG = "GoatTunAdapter"
-
-        /**
-         * Returns an adapter detached from any VpnService — used by
-         * MainActivity for short-lived bundle-import + status calls
-         * that must not invoke configureInterface / protectSocket.
-         */
-        fun noop(): TunAdapterImpl = TunAdapterImpl(service = null)
 
         private fun parseCidr(s: String): Pair<String, Int>? {
             val parts = s.split('/')
