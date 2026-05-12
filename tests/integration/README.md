@@ -118,7 +118,7 @@ side is already implemented. The goal is a two-stage round-trip:
 | **Server WG pubkey** | 32-byte Curve25519 public key | Goes into the bundle as both `PeerPubkey` and `KnownEndpoints[0].Pubkey`. |
 | **Pre-provisioned client peer** | The client pubkey from `CPDevicePubkey` is configured as an allowed peer on the wg-cp0 listener at bundle-issuance time | The bundle carries the client keypair (`CPDevicePubkey` + `CPDevicePrivkey`); the daemon uses it instead of minting fresh. The lab-side WG config must have already added that pubkey. |
 | **Mesh-side address** | An IP inside the mesh subnet | Goes into `KnownEndpoints[0].MeshAddr`. The bundle's `CPDeviceAddress` is the corresponding client-side address. |
-| **Trust-root pubkey** | Ed25519 PEM (`PUBLIC KEY`-typed) | The CA pubkey that signed the bundle. Distributed as `LAB_TRUST_ROOTS_B64` in this repo's secrets. |
+| **Trust-root pubkey** | ECDSA P-256 PEM (`PUBLIC KEY`-typed, post-Block-79 / #26) | The CA pubkey that signed the bundle. Distributed as `LAB_TRUST_ROOTS_B64` in this repo's secrets. Current fleet CA: [`ops/enrollment/public-keys/dev-desertbread-ca-ecdsa-2026-05-09.pem`](https://github.com/dlf-dds/DesertBreadBird/blob/main/ops/enrollment/public-keys/dev-desertbread-ca-ecdsa-2026-05-09.pem). |
 
 The bundle wire format is defined in
 [`internal/bundle/bundle.go`](../../internal/bundle/bundle.go) — keep it
@@ -129,22 +129,48 @@ in lock-step with goat-trunk's
 
 Use goat-trunk's offline-CA tooling at `ops/enrollment/`. The end-to-end
 runbook lives at goat-trunk's
-[`docs/operations/enrollment-bundle-runbook.md`](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/enrollment-bundle-runbook.md)
-— follow the **prod-CA** path during the validation window. (Operator
-points at the actual prod-CA artifact path; see PR description.)
+[`docs/operations/enrollment-bundle-runbook.md`](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/enrollment-bundle-runbook.md).
+
+The CA to sign with is the **current live-fleet CA** —
+`dev-desertbread-ca-ecdsa-2026-05-09`. Despite the `dev-` prefix this
+is the single CA the entire fleet runs on post-Block-79 (all
+mgmt-hosts, wg-cp0 bundles, Traefik leaves, Spock mesh, etc.). No
+separate prod-CA exists; the prefix is legacy naming.
+
+Concrete invocation:
+
+```bash
+cd ~/src/github.com/dlf-dds/DesertBreadBird/
+SMOKE_DIR="$HOME/.desertbread/state/goat-client-smoke"
+mkdir -p "$SMOKE_DIR"
+
+./ops/enrollment/cmd/bundle-create/bundle-create \
+  -mode dev \
+  -age-identity "$HOME/.config/age/keys.txt" \
+  -ca-key ops/enrollment/ca/dev/ca.key.age \
+  -ca-id dev-desertbread-ca-ecdsa-2026-05-09 \
+  -wg-cp0-relays ops/enrollment/wg-cp0-relays-prod.json \
+  -wg-cp0-address 198.18.0.14/24 \
+  -site goat-client-smoke \
+  -device-id goat-client-smoke-ci \
+  -acl-groups GOAT-CLIENT-SMOKE \
+  -ttl-days 14 -activation-days 14 \
+  -first-relay-route-subnet 198.18.0.0/24 \
+  -update-allowlist ops/enrollment/wg-cp0-bundle-allowlist.json \
+  -out "$SMOKE_DIR/goat-client-smoke.bundle.cbor"
+```
 
 Time-boxed scope per #15 + #20:
 
 - `-ttl-days 14` — covers the 2026-05-10 → 2026-05-17 prod-access
-  window plus a 7-day defense-in-depth buffer. Bundle expires
-  automatically near sunset.
+  window plus a 7-day defense-in-depth buffer.
 - `-activation-days 14` — same horizon; the test re-imports every run
   so activation isn't load-bearing, but matching keeps the bundle's
   validity envelope coherent.
-- Dedicated mesh-IP from the free pool (`198.18.0.14`-`198.18.0.19`).
-- Single-purpose ACL group (e.g. `GOAT-CLIENT-SMOKE`).
-- `-update-allowlist` to append to
-  `ops/enrollment/wg-cp0-bundle-allowlist.json`, then push via Ansible
+- Mesh-IP `198.18.0.14` from the free pool (`198.18.0.14`-`198.18.0.19`).
+- Single-purpose ACL group `GOAT-CLIENT-SMOKE`.
+- `-update-allowlist` appends to
+  `ops/enrollment/wg-cp0-bundle-allowlist.json`; then push via Ansible
   to the prod relays so the relay-side WG accepts the new pubkey.
 
 ### Wiring the secrets
@@ -156,8 +182,8 @@ peer probe IP the test TCP-connects to via the wg-cp0 tunnel:
 # From the operator workstation, after a fresh bundle is minted and
 # the allowlist push has completed:
 
-base64 < lab.bundle.cbor          > /tmp/LAB_BUNDLE_B64
-base64 < prod-ca-pubkey.pem       > /tmp/LAB_TRUST_ROOTS_B64
+base64 < "$SMOKE_DIR/goat-client-smoke.bundle.cbor"                            > /tmp/LAB_BUNDLE_B64
+base64 < ops/enrollment/public-keys/dev-desertbread-ca-ecdsa-2026-05-09.pem    > /tmp/LAB_TRUST_ROOTS_B64
 
 # macOS: base64 has no -w; default is no wrapping, which is what we want.
 # GNU coreutils on Linux: pass -w0 if you want a single line; the
