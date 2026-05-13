@@ -121,6 +121,12 @@ desktop.ini
 .env
 .env.*
 !.env.example
+# direnv: operator-laptop-specific env exports (e.g. GOAT_LAB_* for the
+# realprotocol smoke run locally against a still-allowlisted prod peer
+# after the GH secrets are deleted post-#15 sunset). Author-side .envrc
+# may exist; .envrc.local is always operator-private.
+.envrc
+.envrc.local
 *.pem
 *.key
 *.p12
