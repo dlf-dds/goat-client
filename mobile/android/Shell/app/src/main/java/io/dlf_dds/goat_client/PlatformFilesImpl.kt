@@ -12,7 +12,7 @@ import java.io.File
  * once and hand them to Go via the [PlatformFiles] gomobile interface.
  *
  * - bundle.cbor   → ConfigurationFilePath: persistent, the imported
- *                   offline-CA bundle (Ed25519-signed CBOR)
+ *                   offline-CA bundle (ECDSA P-256-signed CBOR)
  * - state.json    → StateFilePath: engine ephemeral state
  *                   (last handshake, peer-pubkey rotation, etc.)
  * - cache/        → CacheDir: debug bundles, log spool

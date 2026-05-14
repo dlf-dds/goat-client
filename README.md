@@ -6,28 +6,29 @@ Consumes an [offline-CA-signed CBOR bundle](https://github.com/dlf-dds/DesertBre
 
 ## Status
 
-**v0.1.0 shipped 2026-05-10** — first stable release. Cosign-signed daemon binaries for six desktop targets are at the [v0.1.0 GitHub Release](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.0). See [`docs/quickstart.md`](docs/quickstart.md) for install + first-bundle import in 10 minutes.
+**v0.1.1 shipped 2026-05-12** — the "actually usable against goat-prod" release. Cosign-signed daemon **and** Fyne GUI binaries for six desktop targets, plus iOS + Android shells with real-tunnel wire-up, are at the [v0.1.1 GitHub Release](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.1). See [`docs/quickstart.md`](docs/quickstart.md) for install + first-bundle import in 10 minutes.
 
-> **Maturity: operator-class first-contact dogfood.** UI tests, real-device mobile validation, real-protocol smoke against a live wg-cp0 endpoint, and cross-platform PR gating land in v0.1.1. The v0.1.0 release ships **daemon-only** binaries; build the Fyne GUI yourself with `go build ./cmd/goat-client`. Don't issue this to non-engineer end users yet.
-**v0.1.0 — desktop ready.** Linux / macOS / Windows daemon + Fyne GUI ship from the [v0.1.0 release](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.0). Mobile shells (iOS / Android) build green and round-trip a bundle in their simulator/emulator; real-tunnel wire-up to the daemon is a v0.1.1 follow-up. See [CHANGELOG.md](CHANGELOG.md) for the full per-track release notes and [HANDOFF.md](HANDOFF.md) for the build-out history.
+> **Maturity: operator-class first-contact dogfood.** Daemon + Fyne GUI ship in every platform archive; per-OS DNS adapters and a real-protocol nightly smoke against a live wg-cp0 endpoint land here. UI test coverage (GAP #2) and a cross-platform PR gate (GAP #3) remain on the v0.1.x backlog — see [HANDOFF.md → v0.1.1 follow-ups](HANDOFF.md#v011-follow-ups). v0.2 foundation (three operating modes: `wg-cp0-only` / `netbird-only` / `combined`) is in flight on `main`; see the [v0.2 foundation build-out](HANDOFF.md#v02-foundation-build-out-in-flight-2026-05-14) section.
+
+See [CHANGELOG.md](CHANGELOG.md) for full per-version release notes and [HANDOFF.md](HANDOFF.md) for the build-out history.
 
 ## Platforms
 
 - Linux (amd64 / arm64) — Fyne desktop GUI + Go daemon (kernel WireGuard or wireguard-go)
 - macOS (amd64 / arm64) — Fyne desktop GUI + Go daemon (wireguard-go)
 - Windows (amd64 / arm64) — Fyne desktop GUI + Go daemon (wireguard.dll)
-- iOS / iPadOS — gomobile-built daemon framework + Swift NEPacketTunnelProvider shell *(v0.1.1)*
-- Android — gomobile-built daemon AAR + Kotlin VpnService shell *(v0.1.1)*
+- iOS / iPadOS — gomobile-built daemon framework + Swift NEPacketTunnelProvider shell
+- Android — gomobile-built daemon AAR + Kotlin VpnService shell
 
 ## Install
 
-Pick the package for your OS from the [v0.1.0 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.0). All assets are cosign-signed; see [Verifying release artifacts](#verifying-release-artifacts) below.
+Pick the package for your OS from the [v0.1.1 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.1). All assets are cosign-signed; see [Verifying release artifacts](#verifying-release-artifacts) below.
 
 ### Debian / Ubuntu (.deb)
 
 ```bash
 curl -fL -o goat-client.deb \
-  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.0/goat-client_0.1.0_amd64.deb
+  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.1/goat-client_0.1.1_amd64.deb
 sudo dpkg -i goat-client.deb
 sudo systemctl status goat-clientd        # daemon auto-starts
 ```
@@ -36,7 +37,7 @@ sudo systemctl status goat-clientd        # daemon auto-starts
 
 ```bash
 curl -fL -o goat-client.rpm \
-  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.0/goat-client-0.1.0-1.x86_64.rpm
+  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.1/goat-client-0.1.1-1.x86_64.rpm
 sudo dnf install ./goat-client.rpm
 sudo systemctl status goat-clientd        # daemon auto-starts
 ```
@@ -45,7 +46,7 @@ sudo systemctl status goat-clientd        # daemon auto-starts
 
 ```bash
 curl -fL -o goat-client.dmg \
-  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.0/goat-client-0.1.0-arm64.dmg
+  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.1/goat-client-0.1.1-arm64.dmg
 hdiutil attach goat-client.dmg
 sudo installer -pkg "/Volumes/goat-client/goat-client.pkg" -target /
 hdiutil detach "/Volumes/goat-client"
@@ -58,7 +59,7 @@ Engineering builds ship unsigned. If Gatekeeper refuses to launch the GUI, clear
 
 ```powershell
 Invoke-WebRequest -OutFile goat-client.msi `
-  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.0/goat-client-0.1.0-amd64.msi
+  https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.1/goat-client-0.1.1-amd64.msi
 msiexec /i goat-client.msi /qn
 Get-Service goat-clientd                  # daemon auto-starts
 ```
@@ -83,12 +84,12 @@ The daemon writes status + handshake details to its log directory (`/var/log/goa
 
 ## Verifying release artifacts
 
-Every v0.1.0 archive is cosign-signed (keyless / OIDC, GitHub Actions identity). Verify before installing:
+Every release archive is cosign-signed (keyless / OIDC, GitHub Actions identity). Verify before installing:
 
 ```bash
 # Fetch the artifact, the signature, and the certificate.
-ASSET=goat-client_0.1.0_amd64.deb
-BASE=https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.0
+ASSET=goat-client_0.1.1_amd64.deb
+BASE=https://github.com/dlf-dds/goat-client/releases/download/goat-client-v0.1.1
 curl -fLO "$BASE/$ASSET"
 curl -fLO "$BASE/$ASSET.sig"
 curl -fLO "$BASE/$ASSET.pem"
@@ -127,7 +128,7 @@ go build ./...    # daemon + GUI, all six platforms compile clean
 ```
 
 For end-user install instructions (download the release tarball, drop trust-roots PEM, run), see [`docs/quickstart.md`](docs/quickstart.md).
-Cross-compile to any of the six desktop targets via `GOOS` / `GOARCH` — see [.github/workflows/release.yml](.github/workflows/release.yml) for the canonical flag set (`-trimpath -buildvcs=false`, `CGO_ENABLED=0`).
+Cross-compile to any of the six desktop targets via `GOOS` / `GOARCH` — see [.github/workflows/release.yml](.github/workflows/release.yml) for the canonical flag set (`-trimpath -buildvcs=false`). The release matrix runs on per-OS native runners with `CGO_ENABLED=1` so the Fyne GUI links against each platform's native graphics deps; a daemon-only build works with `CGO_ENABLED=0`.
 
 ### iOS
 

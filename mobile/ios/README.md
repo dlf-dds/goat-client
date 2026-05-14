@@ -75,9 +75,9 @@ open GoatClient.xcodeproj
 4. User taps **Connect**.
 5. `NETunnelProviderManager.connection.startVPNTunnel(...)` activates the NE extension.
 6. `PacketTunnelProvider.startTunnel(...)` reads the bundle from the App Group container, configures `NEPacketTunnelNetworkSettings`, and calls `GoatClientSDK.NewClient(...).Run(fd, ...)` on a background thread.
-7. (Once Track A lands.) The Go side parses + verifies the bundle (Ed25519-signed CBOR), brings up the wg-cp0 outer WireGuard tunnel against the bundle's pinned endpoint, and reports `connected`.
+7. The Go side parses + verifies the bundle (ECDSA P-256-signed CBOR) against the embedded trust roots from `internal/trustanchor`, brings up the wg-cp0 outer WireGuard tunnel against the bundle's pinned endpoint, and reports `connected`.
 
-Until Track A's `internal/tunnel` + `internal/bundle` packages land, `Run()` returns `ErrTrackANotYetWired` and the UI surfaces "tunnel backend not yet wired (Track A pending)". The Xcode build, the NE extension wiring, and the import/persist round-trip all work end-to-end on Simulator.
+Wired end-to-end via `tunnel.RunOnMobile` in v0.1.1 (PR #18). Simulator handshake smoke and lab-endpoint Connect are both green. The iPhone Simulator NE config load is best-effort — see [PR #28](https://github.com/dlf-dds/goat-client/pull/28) for the Simulator-only `loadAllFromPreferences` workaround.
 
 ## QR code import (deferred)
 
@@ -96,4 +96,4 @@ When the operator procures a team:
 
 - The extension runs in a sandboxed process, separate from the main app. They communicate **only** via the App Group container — no direct memory sharing.
 - The extension has a tighter memory budget (~50 MB) than the main app. The Go runtime is mindful of this; gomobile-bound code uses goroutines sparingly.
-- The utun file descriptor extraction is currently `-1` — Track A's `iface/device/device_ios.go` will carry the documented FD-discovery dance and replace this stub.
+- The utun file descriptor is plumbed from `NEPacketTunnelProvider.packetFlow` into `tunnel.RunOnMobile(ctx, fd, ...)` — see `mobile/ios/Shell/PacketTunnel/PacketTunnelProvider.swift` for the FD handoff and `internal/tunnel/runmobile.go` for the Go-side wrap.

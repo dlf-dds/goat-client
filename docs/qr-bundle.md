@@ -12,15 +12,16 @@ code (or a paste-in-channel string).
   enough margin for noisy scans while still fitting on a phone screen at
   arms' length.
 - Round-trip identity: the bytes that come out of `Decode()` must equal the
-  bytes the operator handed to `Encode()`. Verification (Ed25519 against the
-  pinned offline-CA root) is done downstream by `internal/bundle/`, not here.
+  bytes the operator handed to `Encode()`. Verification (ECDSA P-256 against
+  the pinned offline-CA root, post-Block-79 cutover) is done downstream by
+  `internal/bundle/`, not here.
 
 ## Sizing budget
 
 The offline-enrollment CBOR bundle (`docs/design/offline-enrollment.md` in
 `dlf-dds/DesertBreadBird`) is approximately 1.5 kB for a single peer:
 issued-to, site, NotBefore/NotAfter, peer Curve25519 pubkey, endpoint list,
-Ed25519 signature, and the CA cert chain.
+ECDSA P-256 ASN.1-DER signature, and the CA cert chain.
 
 QR alphanumeric mode encodes 11 bits per pair of characters (vs. 8 bits per
 byte in byte mode), and the 45-character alphanumeric alphabet is exactly
@@ -51,7 +52,7 @@ the input would exceed the QR-40/L alphanumeric ceiling.
 We pick **error-correction level L** (~7% recoverable) deliberately:
 bundles are short-lived (90-day NotAfter), the operator scans in person on a
 clean screen or freshly-printed page, and the delivery channel is
-authenticated by the Ed25519 signature inside the CBOR — a flipped bit
+authenticated by the ECDSA P-256 signature inside the CBOR — a flipped bit
 either decodes to a valid CBOR with a bad signature (rejected downstream)
 or fails CBOR parse (rejected downstream). We do not need the QR code
 itself to be self-correcting beyond what L provides, and L gives us the
@@ -126,5 +127,5 @@ existing `Preview()` flow.
    then hands the resulting CBOR to the daemon's `importBundle` IPC.
 
 The PNG is suitable for embedding in a printed enrollment letter or showing
-on a kiosk screen. Authentication is provided by the Ed25519 signature
+on a kiosk screen. Authentication is provided by the ECDSA P-256 signature
 inside the CBOR — the QR is just transport.

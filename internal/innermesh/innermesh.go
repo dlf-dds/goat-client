@@ -2,14 +2,20 @@
 // netbird-derived layer that runs inside goat-client when the operator
 // selects `netbird-only` or `combined` mode).
 //
-// THIS FILE IS A SCAFFOLDING SHIM. The real implementation lands as
-// Block 76N (Worker A). See INTERFACE.md in this directory for the
-// drafted contract. Until Worker A publishes, the daemon binds to the
-// Fake exported below — which is enough to drive the desktop GUI's
-// mode-selector + status-pane + tray-icon surface and the headless
-// daemon's mode-reconciliation logic end-to-end.
+// The v0.2 foundation (Block 76N, PR #39) landed the canonical
+// interface + Config shape + FromBundle helper here. PR #41 then
+// landed M0+M1 of the netbird-library un-strip: netbird.go is a
+// compile-time-clean Mesh impl backed by netbird's public
+// client/embed package. End-to-end Configure + Up against a real
+// mgmt-server is M2; three headless smoke-modes runs are M4; the
+// New() flip from NewFake to NewNetbird is M5. Until M5 lands New()
+// returns the Fake — which is enough to drive the desktop GUI's
+// mode-selector + status-pane + tray-icon surface, the headless
+// daemon's mode-reconciliation logic, and the gomobile facade
+// end-to-end.
 //
-// Replace this file (keep INTERFACE.md, replace fake.go) when 76N lands.
+// See INTERFACE.md for the contract and UNSTRIP.md for the M0..M6
+// milestone plan.
 package innermesh
 
 import (
@@ -126,6 +132,7 @@ type Mesh interface {
 	Close() error
 }
 
-// New constructs the canonical inner-mesh implementation. Until Worker
-// A's Block 76N lands this returns the Fake.
+// New constructs the canonical inner-mesh implementation. Until M5 of
+// the netbird un-strip flips this to NewNetbird (gated on the M4
+// headless smoke-modes runs), New returns the Fake. See UNSTRIP.md.
 func New() Mesh { return NewFake() }

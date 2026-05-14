@@ -102,39 +102,23 @@ Or open `Shell/` in Android Studio and use Run > app.
 Once the AAR + APK are built and the app is installed:
 
 1. Open the goat-client app on the emulator.
-2. Tap **Import bundle** → pick a `.cbor` bundle (any non-empty file works
-   while Track A's bundle parser is converging — the SDK only persists the
-   bytes today and exposes `bundleSum` (SHA-256) via the status JSON).
+2. Tap **Import bundle** → pick a `.cbor` bundle minted by the offline
+   CA. The SDK parses + ECDSA-P-256-verifies against the embedded trust
+   roots and surfaces `bundle.IssuedTo` / `bundle.Site` / `bundle.Expires`
+   / `bundle.PeerPubkey` + the SHA-256 `bundleSum` via the status JSON.
 3. Verify the status pane updates to "Bundle ready · tap Connect" and the
    first 12 hex of `bundleSum` appears.
 4. Tap **Connect** → system shows VPN-consent dialog → accept → foreground
    notification appears.
-5. Status will report `error` with reason
-   *"wg-cp0 tunnel engine not yet integrated; depends on Track A internal/tunnel converging"*
-   — this is the expected scaffolding state. The VPN consent + foreground
-   service path is verified end-to-end; the engine wiring lights up once
-   Track A merges.
+5. Status reports `connected` once handshake completes (`latestHandshake`
+   age in the status JSON ticks down to seconds). End-to-end tunnel
+   wire-up landed in v0.1.1 (PR #18); end-to-end Android-emulator
+   handshake validation in PR #32.
 6. Tap **Disconnect** → notification clears, state returns to "imported".
 
-## Track A convergence — wire-up checklist
-
-When `internal/tunnel/` + `internal/bundle/` land, the integration points
-in this track are:
-
-- `mobile/android/GoatClientSDK/client_android.go`
-  - `ImportBundle()` → call `bundle.Parse(bundleBytes)`; reject on Ed25519
-    signature failure; surface `bundle.IssuedTo` / `bundle.Site` /
-    `bundle.Expires` / `bundle.PeerPubkey` via `GetTunnelStatus()` JSON.
-  - `Run()` → instantiate `tunnel.Engine{}` with the parsed bundle and
-    call its `Run(ctx, tunAdapter, ...)` instead of returning the
-    "not yet wired" error.
-  - `RenewTun()` → forward to `tunnel.Engine.RenewTun(fd)`.
-
-- `mobile/android/GoatClientSDK/protect_android.go`
-  - `setAndroidProtectSocketFn` wires in the Kotlin callback. Track A's
-    `internal/net/` Android variant should call `goatclient.AndroidProtectSocket`
-    from its `ControlProtectSocket` (analogous to netbird's
-    `client/net/protectsocket_android.go`).
+To exercise the loop without lab access, use [`cmd/smoke-endpoint`](../../cmd/smoke-endpoint/)
++ [`cmd/smoke-mint`](../../cmd/smoke-mint/) on the host (Android emulator
+reaches the host on `10.0.2.2`).
 
 ## Open follow-ups (not in this PR)
 
@@ -158,8 +142,8 @@ Heavily reshaped per design doc §wg-cp0-onboarding:
 
 - **Stripped:** Login / IsLoginRequired / WaitSSOLogin / Networks / PeersList /
   route management / profile manager / preferences (mesh-mgmt concepts).
-- **Added:** ImportBundle (CBOR + offline-CA-Ed25519) / GetTunnelStatus
-  (JSON snapshot for the UI) / single-tunnel scope.
+- **Added:** ImportBundle (CBOR + offline-CA-ECDSA-P-256, post-Block-79) /
+  GetTunnelStatus (JSON snapshot for the UI) / single-tunnel scope.
 - **Preserved:** TunAdapter interface shape (so internal/tunnel can fork
   netbird's iface/device/* tree drop-in-compatibly), gomobile facade
   conventions, VpnService / protect bridge.

@@ -26,8 +26,8 @@ import org.json.JSONObject
  * holder for the gomobile-bound goatclient.Client and its singleton lifecycle):
  *
  *   1. Import-bundle: SAF document picker → bytes → GoatClient.importBundle().
- *      Once Track A's internal/bundle parser lands, the SDK will validate the
- *      Ed25519 signature against the pinned offline-CA root and reject on failure.
+ *      The SDK validates the ECDSA P-256 signature (post-Block-79 cutover)
+ *      against the pinned offline-CA root and rejects on failure.
  *
  *   2. Prepare + start VpnService: VpnService.prepare() asks the system for the
  *      always-on-VPN consent dialog (one-time per app), then the resulting

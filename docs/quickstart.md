@@ -24,27 +24,27 @@ go run ./ops/enrollment/cmd/bundle-create \
   --out alice-bundle.cbor
 ```
 
-The CBOR bundle (~1.5 kB) carries the issued-to / site / validity window / peer Curve25519 pubkey / endpoint list and is Ed25519-signed by the offline CA. Hand `alice-bundle.cbor` to the end-user via your normal out-of-band channel — encrypted email, file drop, USB, or QR scan via [`docs/qr-bundle.md`](qr-bundle.md) for an air-gapped device.
+The CBOR bundle (~1.5 kB) carries the issued-to / site / validity window / peer Curve25519 pubkey / endpoint list and is ECDSA P-256-signed by the offline CA (cutover from Ed25519 in v0.1.1 per Block 79; see [CHANGELOG.md](../CHANGELOG.md#011--2026-05-12)). Hand `alice-bundle.cbor` to the end-user via your normal out-of-band channel — encrypted email, file drop, USB, or QR scan via [`docs/qr-bundle.md`](qr-bundle.md) for an air-gapped device.
 
 The bundle is single-use-by-policy but technically reusable until `not-after`; rotate by minting a new one before the old one expires.
 
 ## 2. End-user installs goat-client
 
-Pick the package from the [v0.1.0 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.0). The full install + cosign-verify recipes live in the [README](../README.md#install). Short form:
+Pick the package from the [v0.1.1 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.1). The full install + cosign-verify recipes live in the [README](../README.md#install). Short form:
 
 ```bash
 # Linux (Debian / Ubuntu)
-sudo dpkg -i goat-client_0.1.0_amd64.deb
+sudo dpkg -i goat-client_0.1.1_amd64.deb
 
 # Linux (Fedora / RHEL)
-sudo dnf install ./goat-client-0.1.0-1.x86_64.rpm
+sudo dnf install ./goat-client-0.1.1-1.x86_64.rpm
 
 # macOS
-hdiutil attach goat-client-0.1.0-arm64.dmg && \
+hdiutil attach goat-client-0.1.1-arm64.dmg && \
   sudo installer -pkg "/Volumes/goat-client/goat-client.pkg" -target /
 
 # Windows (PowerShell, elevated)
-msiexec /i goat-client-0.1.0-amd64.msi /qn
+msiexec /i goat-client-0.1.1-amd64.msi /qn
 ```
 
 The daemon (`goat-clientd`) auto-starts as a system service on all three platforms and idles waiting for a bundle.
@@ -69,7 +69,7 @@ The dialog parses the CBOR locally (no network) and renders:
 - Peer pubkey (Curve25519, base64)
 - Endpoint list (`host:port` per endpoint)
 
-Click **Apply**. The GUI hands the parsed bundle to the daemon over local IPC; the daemon verifies the Ed25519 signature against the pinned offline-CA root, persists the bundle to the platform-specific bundle directory (mode 0600), and brings up the wg-cp0 tunnel. The system tray icon goes amber → green when handshake completes.
+Click **Apply**. The GUI hands the parsed bundle to the daemon over local IPC; the daemon verifies the ECDSA P-256 signature against the pinned offline-CA root, persists the bundle to the platform-specific bundle directory (mode 0600), and brings up the wg-cp0 tunnel. The system tray icon goes amber → green when handshake completes.
 
 ### 3b. Manual drop (headless / scripted)
 
@@ -137,10 +137,10 @@ Once the tunnel is up, ping a known peer behind it:
 ping -c 3 <peer-internal-ip>
 ```
 
-If the tunnel handshakes but ping fails, the most likely culprit is DNS resolution inside the tunnel — the per-platform DNS adapters land in v0.1.1; until then, ping by IP and configure your apps to resolve via a host file or external resolver. See [troubleshooting.md](troubleshooting.md#tunnel-up-but-dns-broken).
+If the tunnel handshakes but ping fails, the most likely culprit is DNS resolution inside the tunnel. The per-platform DNS adapters (systemd-resolved / scutil / NRPT) ship live in v0.1.1, but if your bundle doesn't carry resolvers — or if you're stuck on a v0.1.0 install — ping by IP and configure your apps to resolve via a host file or external resolver. See [troubleshooting.md](troubleshooting.md#tunnel-up-but-dns-broken).
 
 ## Where to next
 
 - [`troubleshooting.md`](troubleshooting.md) — when something doesn't come up.
 - [`qr-bundle.md`](qr-bundle.md) — QR-encoded bundles for air-gapped or mobile delivery.
-- [README → Verifying release artifacts](../README.md#verifying-release-artifacts) — confirm your install came from a signed v0.1.0 release before running the daemon as root.
+- [README → Verifying release artifacts](../README.md#verifying-release-artifacts) — confirm your install came from a signed release before running the daemon as root.

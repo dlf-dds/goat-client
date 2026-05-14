@@ -8,8 +8,9 @@ Two tiers, gated by Go build tags.
 
 Hermetic. The test process:
 
-1. Mints a fresh Ed25519 trust-root keypair, writes the public key as a
-   PEM file.
+1. Mints a fresh ECDSA P-256 trust-root keypair (post-Block-79 cutover;
+   see [CHANGELOG.md](../../CHANGELOG.md#011--2026-05-12) PR #26), writes
+   the public key as a PEM file.
 2. Constructs a valid `bundle.EnrollmentBundle` (timestamps, device ID,
    site, one relay endpoint), signs with the private key, marshals to
    canonical CBOR.
@@ -42,7 +43,7 @@ Wall-clock budget: under 30s for the full class.
 
 ## Tier-B — `realprotocol` build tag (sibling)
 
-Spawns the daemon, imports a real CBOR-+-Ed25519 bundle minted by the
+Spawns the daemon, imports a real CBOR-+-ECDSA-P-256 bundle minted by the
 offline-CA workstation, brings the wg-cp0 outer tunnel up against a
 live endpoint baked into the bundle's `KnownEndpoints`, asserts
 handshake completion, then TCP-connects to a target IP through the
@@ -55,7 +56,7 @@ Required env:
 | Var | Purpose |
 |---|---|
 | `GOAT_LAB_BUNDLE_PATH` | path to a CBOR-encoded offline-CA bundle valid for a wg-cp0 endpoint in the lab |
-| `GOAT_LAB_TRUST_ROOTS_PATH` | PEM file with the Ed25519 pubkey that signed the bundle |
+| `GOAT_LAB_TRUST_ROOTS_PATH` | PEM file with the ECDSA P-256 pubkey that signed the bundle |
 | `GOAT_LAB_TARGET_IP` | mesh IP of a probe peer reachable through the wg-cp0 tunnel; the test TCP-connects to confirm tunnel data-plane, not just handshake |
 
 Optional env:

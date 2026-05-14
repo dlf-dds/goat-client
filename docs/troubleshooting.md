@@ -77,14 +77,17 @@ go run ./ops/enrollment/cmd/bundle-verify \
 
 ## Tunnel up but DNS broken
 
-**This is the known v0.1.0 sharp edge.** Per-platform DNS adapter implementations (systemd-resolved / scutil / NRPT) are stubs in v0.1.0 — they accept config without applying it. Symptom: `wg show wg-cp0` shows recent handshake + traffic, you can `ping <peer-internal-ip>` by IP, but `ping <peer-internal-hostname>` fails to resolve.
+Symptom: `wg show wg-cp0` shows recent handshake + traffic, you can `ping <peer-internal-ip>` by IP, but `ping <peer-internal-hostname>` fails to resolve.
 
-**Workaround until v0.1.1:** resolve manually. Either:
+Per-platform DNS adapters (systemd-resolved / scutil / NRPT) shipped live in **v0.1.1** (PR #19). The daemon applies resolvers from `bundle.DNSServers` on `Connect` and clears them on `Disconnect`. If you're seeing this symptom:
+
+- **On v0.1.0:** the adapters were stubs that accepted config without applying it. Upgrade to v0.1.1 or later.
+- **On v0.1.1+:** the bundle may not carry any resolvers (operator-side mint omitted `--dns`), or the adapter failed to apply them. Check `goat-clientd` logs around the Connect attempt for `dns adapter: ...` lines. On Linux, confirm systemd-resolved is the active resolver (`resolvectl status wg-cp0`); on macOS, `scutil --dns | grep -A 5 wg-cp0`; on Windows, `Get-DnsClientNrptRule`.
+
+**Workaround if a fix isn't immediate:** resolve manually. Either:
 
 - Add an `/etc/hosts` entry (`%SystemRoot%\System32\drivers\etc\hosts` on Windows) for the peers you need by name.
 - Configure the calling app to use an in-tunnel resolver IP directly (e.g. `dig @<resolver-ip> <name>`).
-
-**v0.1.1 follow-up:** Track A Phase 2 lifts the per-platform DNS adapters from the [netbird upstream `client/internal/dns/host_*.go`](https://github.com/netbirdio/netbird/tree/master/client/internal/dns) (already cited as the lift target in `internal/tunnel/dns/adapter_*.go`). Track linked from [HANDOFF.md → v0.1.1 follow-ups](../HANDOFF.md#v011-follow-ups).
 
 ## Tunnel won't come up at all
 
@@ -92,8 +95,8 @@ go run ./ops/enrollment/cmd/bundle-verify \
 
 - **Endpoint unreachable.** Try `nc -uvz <endpoint-host> <endpoint-port>` from outside the tunnel — UDP probes are unreliable but the daemon's [`internal/reachability`](../internal/reachability/) prober runs the same check internally; the GUI's diagnostics pane shows the per-endpoint result.
 - **Multiple endpoints in bundle, all unreachable.** Same prober ranks them and picks the first reachable one. If the bundle was minted with stale endpoints, ask the operator for a fresh one with current endpoints.
-- **NAT in front of the daemon.** WireGuard tolerates NAT but the peer needs to reach you — confirm with the operator that this device is configured as the initiator (the daemon always initiates in v0.1.0), not awaiting an inbound handshake.
-- **Linux + kernel WireGuard module missing.** v0.1.0 uses userspace wireguard-go on all platforms (no kernel-module dependency), so this shouldn't bite — but if you compiled from source with a non-default tag, double-check.
+- **NAT in front of the daemon.** WireGuard tolerates NAT but the peer needs to reach you — confirm with the operator that this device is configured as the initiator (the daemon always initiates), not awaiting an inbound handshake.
+- **Linux + kernel WireGuard module missing.** Current releases use userspace wireguard-go on all platforms (no kernel-module dependency), so this shouldn't bite — but if you compiled from source with a non-default tag, double-check.
 
 ## GUI launches but says "daemon unavailable"
 
@@ -109,12 +112,12 @@ On Linux/macOS, the GUI runs as the unprivileged user; the socket should be grou
 
 ## "Apple Developer ID can't be verified" / SmartScreen warning
 
-v0.1.0 desktop builds ship unsigned for code-signing purposes (cosign signs the artifacts at the release boundary; Apple Developer ID + Authenticode certs are operator procurements that hadn't cleared at v0.1.0).
+Engineering builds ship unsigned for OS-level code-signing purposes (cosign signs the artifacts at the release boundary; Apple Developer ID + Authenticode certs are operator procurements that haven't cleared yet — see [HANDOFF.md → v0.1.1 follow-ups item 6](../HANDOFF.md#v011-follow-ups)).
 
 - **macOS:** `xattr -d com.apple.quarantine /Applications/goat-client.app` clears Gatekeeper. Or right-click → Open and choose Open anyway.
 - **Windows:** SmartScreen "More info → Run anyway".
 
-These warnings will stop in v0.2.0 once the signing certs are in CI.
+These warnings will stop once the signing certs are procured and wired into `release.yml`.
 
 ## Resetting state
 
