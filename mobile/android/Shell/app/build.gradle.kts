@@ -51,15 +51,21 @@ val canSignRelease: Boolean = keystorePath != null && file(keystorePath).exists(
 
 android {
     namespace = "io.dlf_dds.goat_client"
-    compileSdk = 34
+    // compileSdk + targetSdk bumped to 35 (Android 15) per Google Play
+    // policy 2026-Q2: new apps must target API ≥35 for Internal Testing
+    // track uploads.
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "io.dlf_dds.goat_client"
         minSdk = 24      // Android 7.0 — covers >97% devices, predates the
                          // pidfd-seccomp-policy issues that the engine
                          // works around at runtime.
-        targetSdk = 34
-        versionCode = 1
+        targetSdk = 35
+        // versionCode bumped to 2 — version 1 was already uploaded to
+        // Play Internal Testing track. Play rejects re-uploads with the
+        // same versionCode.
+        versionCode = 2
         versionName = "0.0.1-pre"
     }
 
