@@ -7,7 +7,8 @@ import Combine
 
 /// TunnelManager wraps NETunnelProviderManager — the iOS-side handle to the
 /// NEPacketTunnelProvider extension. Drives configuration save, start, stop,
-/// and status polling for the SwiftUI surface.
+/// status polling, and (v0.2) mode selection. The mode lives in App Group
+/// UserDefaults via ``ModeStore``; the NE extension reads it on startTunnel.
 @MainActor
 final class TunnelManager: ObservableObject {
     enum Status {
@@ -21,6 +22,20 @@ final class TunnelManager: ObservableObject {
     @Published var status: Status = .disconnected
     @Published var statusText: String = "disconnected"
     @Published var lastErrorText: String?
+
+    /// Currently active operating mode. Setter persists to App Group
+    /// UserDefaults so the NE extension reads the same value on its next
+    /// startTunnel. Switching while connected triggers a tunnel restart
+    /// (caller responsibility — see ``selectMode``).
+    @Published private(set) var mode: OperatingMode = ModeStore.read()
+
+    /// Per-tunnel substate. Single-tunnel modes populate exactly one slot;
+    /// `combined` populates both. Until 76N's `getInnerMeshStatus` IPC
+    /// surfaces real per-tunnel state, both reflect the aggregate NE
+    /// connection status — the UI is correct for v0.2 baseline and gains
+    /// fidelity automatically when the SDK starts publishing splits.
+    @Published var wgCp0Tunnel: TunnelCardState = .disabled
+    @Published var innerMeshTunnel: TunnelCardState = .disabled
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -66,6 +81,24 @@ final class TunnelManager: ObservableObject {
         objectWillChange.send()
     }
 
+    /// Set the active mode. Persists immediately so the NE extension reads
+    /// the new value on the next startTunnel. If the tunnel is up, restart
+    /// it so the new mode takes effect (the extension cannot hot-swap modes
+    /// — wireguard-go owns the data path and re-binding it mid-flight isn't
+    /// reentrancy-safe).
+    func selectMode(_ newMode: OperatingMode) async {
+        guard newMode != mode else { return }
+        ModeStore.write(newMode)
+        mode = newMode
+        refreshTunnelCardsForMode()
+
+        // Restart only if currently up; cold-state mode picks just persist.
+        if status == .connected || status == .connecting {
+            await disconnect()
+            await connect()
+        }
+    }
+
     func connect() async {
         guard let manager = manager else {
             lastErrorText = "Tunnel manager not loaded yet."
@@ -76,16 +109,18 @@ final class TunnelManager: ObservableObject {
             return
         }
         do {
-            // The NE extension reads the bundle from the App Group container,
-            // so no per-call options are needed beyond a hint that the user
-            // initiated this start (vs on-demand).
+            // The NE extension reads the bundle + the mode from the App
+            // Group container, so no per-call options are needed beyond a
+            // hint that the user initiated this start (vs on-demand).
             try manager.connection.startVPNTunnel(options: ["userInitiated": NSNumber(value: true)])
             status = .connecting
             statusText = "connecting"
+            refreshTunnelCardsForMode(forceState: .connecting)
         } catch {
             lastErrorText = "startVPNTunnel: \(error.localizedDescription)"
             status = .error
             statusText = "error"
+            refreshTunnelCardsForMode(forceState: .error)
         }
     }
 
@@ -94,6 +129,7 @@ final class TunnelManager: ObservableObject {
         manager.connection.stopVPNTunnel()
         status = .disconnected
         statusText = "disconnected"
+        refreshTunnelCardsForMode()
     }
 
     // MARK: - private
@@ -137,6 +173,7 @@ final class TunnelManager: ObservableObject {
         guard let connection = manager?.connection else {
             status = .disconnected
             statusText = "disconnected"
+            refreshTunnelCardsForMode()
             return
         }
         switch connection.status {
@@ -155,6 +192,47 @@ final class TunnelManager: ObservableObject {
         @unknown default:
             status = .error
             statusText = "unknown(\(connection.status.rawValue))"
+        }
+        refreshTunnelCardsForMode()
+    }
+
+    private func refreshTunnelCardsForMode(forceState: TunnelCardState? = nil) {
+        let derived = forceState ?? cardStateFromAggregate()
+        wgCp0Tunnel = mode.hasWgCp0 ? derived : .disabled
+        innerMeshTunnel = mode.hasInnerMesh ? derived : .disabled
+    }
+
+    private func cardStateFromAggregate() -> TunnelCardState {
+        switch status {
+        case .connected:    return .connected
+        case .connecting:   return .connecting
+        case .error:        return .error
+        case .disconnected: return .idle
+        }
+    }
+}
+
+/// Per-tunnel card substate rendered in the status view. Decoupled from
+/// the aggregate ``TunnelManager.Status`` so single-tunnel and combined
+/// modes can drive identical-shape cards.
+enum TunnelCardState: Equatable {
+    /// Mode does not include this tunnel — show greyed-out.
+    case disabled
+
+    /// Mode includes this tunnel but it isn't running yet.
+    case idle
+
+    case connecting
+    case connected
+    case error
+
+    var label: String {
+        switch self {
+        case .disabled:   return "Disabled"
+        case .idle:       return "Idle"
+        case .connecting: return "Connecting"
+        case .connected:  return "Connected"
+        case .error:      return "Error"
         }
     }
 }

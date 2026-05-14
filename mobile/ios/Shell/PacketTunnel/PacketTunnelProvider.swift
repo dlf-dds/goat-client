@@ -3,12 +3,22 @@
 //
 // PacketTunnelProvider — NEPacketTunnelProvider subclass that hosts the
 // goat-client tunnel inside the iOS Network Extension sandbox. Loads the
-// imported bundle from the App Group container, configures the tunnel
-// network settings (placeholder values until Track A's bundle parser lands),
-// extracts the utun file descriptor, and hands control to GoatClientSDK.Run.
+// imported bundle and the operator-selected mode from the App Group
+// container, configures the tunnel network settings, extracts the utun
+// file descriptor, and hands control to GoatClientSDK on a per-mode start
+// path:
 //
-// Built as a separate target (`PacketTunnel.appex`); links against the
-// GoatClientSDK.xcframework.
+//   • `wg-cp0-only` — today's GoatClientSDK.Run (wg-cp0 outer only).
+//   • `netbird-only` — Worker A's InnerMesh library starts the inner
+//     netbird mesh; no wg-cp0 outer claimed. Falls back to a clean
+//     error until 76N's library lands.
+//   • `combined` — both tunnels in the same Go runtime (path A per ADR
+//     0840 amendment 2026-05-10b). wg-cp0 via today's Run; inner mesh
+//     pending 76N. Until then we bring up wg-cp0 and surface a
+//     non-fatal warning that the inner half is dormant.
+//
+// Mode changes from the main app trigger stopTunnel + startTunnel — the
+// new mode is read from ModeStore on the next startTunnel.
 
 import NetworkExtension
 import os.log
@@ -27,10 +37,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// disconnected. Run() is blocking, so it lives on a detached Task.
     private var clientTask: Task<Void, Never>?
 
-    override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-        os_log("startTunnel invoked", log: Self.log, type: .info)
+    /// Mode this provider instance is currently servicing. Captured at
+    /// startTunnel so a concurrent main-app mode flip can't race the
+    /// dispatch decision (the main app will issue a fresh start anyway).
+    private var activeMode: OperatingMode = .default
 
-        // 1. Confirm a bundle exists. We can't onboard without one.
+    override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        let mode = ModeStore.read()
+        activeMode = mode
+        os_log("startTunnel invoked, mode=%{public}@", log: Self.log, type: .info, mode.rawValue)
+
+        // Every mode needs a bundle (wg-cp0 reads CPDevice* fields; netbird
+        // reads inner_mesh_setup + mobile_cert via the 76N CBOR extension).
         guard BundleStore.hasBundle else {
             let err = NSError(domain: "io.dlf-dds.goat-client.PacketTunnel",
                               code: 1,
@@ -39,12 +57,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
-        // 2. Configure tunnel network settings. Until Track A's bundle parser
-        //    lands and the GoatClientSDK exposes parsed bundle metadata, we
-        //    use placeholder values that let the NE setup complete without
-        //    actually routing traffic. Real values come from the bundle's
-        //    declared interface IPv4/IPv6 address + assigned DNS.
-        let settings = makePlaceholderSettings()
+        // Configure tunnel network settings. Real values come from the
+        // bundle's CPDeviceAddress + InnerMeshSetup once Worker A exposes
+        // them via the SDK; the placeholders let NE setup complete on
+        // every mode for the v0.2 baseline.
+        let settings = makeTunnelSettings(for: mode)
         setTunnelNetworkSettings(settings) { [weak self] err in
             guard let self = self else { return }
             if let err = err {
@@ -52,10 +69,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 completionHandler(err)
                 return
             }
-
-            // 3. Hand off to GoatClientSDK.Run on a background thread. Run is
-            //    blocking — it returns when the tunnel exits.
-            self.startGoBackend(completionHandler: completionHandler)
+            self.startGoBackend(mode: mode, completionHandler: completionHandler)
         }
     }
 
@@ -64,6 +78,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         #if canImport(GoatClientSDK)
         // The Go side's Stop() is idempotent.
         currentClient?.stop()
+        // TODO(76N): also call into the InnerMesh handle's Down() once
+        // Worker A's library is wired; today the inner-mesh path is a
+        // stub so there's nothing additional to tear down.
         #endif
         clientTask?.cancel()
         clientTask = nil
@@ -78,7 +95,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var currentClient: GoatClientSDKClient?
     #endif
 
-    private func makePlaceholderSettings() -> NEPacketTunnelNetworkSettings {
+    private func makeTunnelSettings(for mode: OperatingMode) -> NEPacketTunnelNetworkSettings {
         // tunnelRemoteAddress is required-non-empty; the wg-cp0 endpoint isn't
         // a single host (it's a wireguard peer endpoint), so use a sentinel.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "169.254.0.1")
@@ -92,10 +109,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // through GoatClientSDK.DnsManager, the Go side will call ApplyDns
         // with a real config.
         settings.dnsSettings = NEDNSSettings(servers: ["9.9.9.9", "149.112.112.112"])
+        // mode-specific routes will diverge once we surface inner-mesh
+        // routes from the bundle (76N publishes them via SDK). For now,
+        // the same default IPv4 route works on every mode.
         return settings
     }
 
-    private func startGoBackend(completionHandler: @escaping (Error?) -> Void) {
+    private func startGoBackend(mode: OperatingMode, completionHandler: @escaping (Error?) -> Void) {
         #if canImport(GoatClientSDK)
         guard let cfgDir = BundleStore.cfgDir, let stateFile = BundleStore.stateFile else {
             let err = NSError(domain: "io.dlf-dds.goat-client.PacketTunnel",
@@ -103,6 +123,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                               userInfo: [NSLocalizedDescriptionKey: "App Group container unavailable"])
             completionHandler(err)
             return
+        }
+
+        // Until 76N publishes a netbird inner-mesh start path through the
+        // gomobile SDK, the netbird-only and combined modes cannot
+        // actually drive the inner half of the tunnel. Refuse cleanly
+        // for netbird-only (no fallback is correct — the user asked
+        // explicitly for "inner only"). For combined, bring up wg-cp0
+        // and surface a non-fatal warning that the inner half is dormant
+        // until the foundation track lands; mode-aware status cards in
+        // the UI will display this correctly via TunnelCardState.idle.
+        if mode == .netbirdOnly {
+            let err = NSError(domain: "io.dlf-dds.goat-client.PacketTunnel",
+                              code: 3,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "netbird-only mode is not yet runtime-supported on this build — awaiting Block 76N InnerMesh library. Pick wg-cp0-only or wait for the next build."])
+            completionHandler(err)
+            return
+        }
+        if mode == .combined {
+            os_log("combined mode: starting wg-cp0 outer; inner mesh is dormant pending 76N",
+                   log: Self.log, type: .default)
         }
 
         let device = UIDevice.current.name
@@ -162,7 +203,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // Tell NE the tunnel is up so the UI shows "connected" — useful for
         // pure-Swift Simulator builds while the gomobile pipeline is being
         // wired. The actual data path is a no-op.
-        os_log("startTunnel: GoatClientSDK not linked; tunnel is a no-op (Simulator dry-run mode)", log: Self.log, type: .default)
+        os_log("startTunnel: GoatClientSDK not linked; tunnel is a no-op (Simulator dry-run mode), mode=%{public}@",
+               log: Self.log, type: .default, mode.rawValue)
         completionHandler(nil)
         #endif
     }

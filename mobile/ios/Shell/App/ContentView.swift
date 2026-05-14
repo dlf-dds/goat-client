@@ -9,15 +9,29 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var importError: String?
 
+    // Bundle-capability detection lives in the gomobile bridge once Worker A
+    // exposes it (76N adds `inner_mesh_setup` + `mobile_cert` to the CBOR
+    // schema; the SDK will surface them as a JSON blob the UI parses). Until
+    // then, an imported v0.1.x bundle reports wg-cp0 only — which is the
+    // correct default behaviour for the v0.2 baseline and lets us land the
+    // mode-selector UI now without waiting on the foundation track.
+    private var bundleCaps: BundleCapabilities {
+        BundleStore.hasBundle
+            ? BundleCapabilities(supportsWgCp0: true, supportsInnerMesh: false)
+            : .empty
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                statusCard
-                bundleCard
-                actionButtons
-                Spacer()
+            ScrollView {
+                VStack(spacing: 24) {
+                    statusCards
+                    modeCard
+                    bundleCard
+                    actionButtons
+                }
+                .padding()
             }
-            .padding()
             .navigationTitle("goat-client")
             .fileImporter(
                 isPresented: $showingImporter,
@@ -33,28 +47,73 @@ struct ContentView: View {
         }
     }
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Tunnel status")
-                .font(.headline)
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 12, height: 12)
-                Text(tunnel.statusText)
-                    .font(.body.monospaced())
+    // MARK: - Status cards
+
+    @ViewBuilder
+    private var statusCards: some View {
+        VStack(spacing: 12) {
+            if tunnel.mode.hasWgCp0 {
+                TunnelStatusCard(title: "wg-cp0 outer", subtitle: "Silent control plane",
+                                 state: tunnel.wgCp0Tunnel)
+            }
+            if tunnel.mode.hasInnerMesh {
+                TunnelStatusCard(title: "Inner mesh", subtitle: "netbird peer overlay",
+                                 state: tunnel.innerMeshTunnel)
             }
             if let last = tunnel.lastErrorText {
                 Text(last)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - Mode card
+
+    private var modeCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Operating mode")
+                .font(.headline)
+
+            let available = bundleCaps.availableModes
+            if available.isEmpty {
+                Text("Import a bundle to choose a mode. v0.1.x bundles default to wg-cp0-only.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else if available.count == 1 {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.secondary)
+                    Text(available[0].displayName)
+                        .font(.body.weight(.medium))
+                }
+                Text(available[0].blurb)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Mode", selection: Binding(
+                    get: { tunnel.mode },
+                    set: { newValue in Task { await tunnel.selectMode(newValue) } }
+                )) {
+                    ForEach(available) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(tunnel.mode.blurb)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
+
+    // MARK: - Bundle card
 
     private var bundleCard: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -66,6 +125,7 @@ struct ContentView: View {
                 Button("Replace bundle…") { showingImporter = true }
                 Button("Clear bundle", role: .destructive) {
                     BundleStore.clear()
+                    ModeStore.reset()
                     tunnel.refreshBundleState()
                 }
             } else {
@@ -102,15 +162,6 @@ struct ContentView: View {
         }
     }
 
-    private var statusColor: Color {
-        switch tunnel.status {
-        case .connected:    return .green
-        case .connecting:   return .orange
-        case .error:        return .red
-        case .disconnected: return .gray
-        }
-    }
-
     private func handleImport(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let err):
@@ -128,10 +179,57 @@ struct ContentView: View {
                     return
                 }
                 try BundleStore.write(data)
+                // Clamp the mode to what this bundle supports — a stale
+                // `combined` selection from a previous netbird-capable
+                // bundle should not survive importing a wg-cp0-only one.
+                let caps = BundleCapabilities(supportsWgCp0: true, supportsInnerMesh: false)
+                if !caps.availableModes.contains(tunnel.mode), let fallback = caps.availableModes.first {
+                    Task { await tunnel.selectMode(fallback) }
+                }
                 tunnel.refreshBundleState()
             } catch {
                 importError = error.localizedDescription
             }
+        }
+    }
+}
+
+/// A single tunnel's status card. Two of these render in `combined` mode;
+/// one each in `wg-cp0-only` and `netbird-only` modes.
+struct TunnelStatusCard: View {
+    let title: String
+    let subtitle: String
+    let state: TunnelCardState
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Circle()
+                .fill(stateColor)
+                .frame(width: 14, height: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(state.label)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var stateColor: Color {
+        switch state {
+        case .connected:  return .green
+        case .connecting: return .orange
+        case .error:      return .red
+        case .idle:       return .gray
+        case .disabled:   return Color.gray.opacity(0.3)
         }
     }
 }
