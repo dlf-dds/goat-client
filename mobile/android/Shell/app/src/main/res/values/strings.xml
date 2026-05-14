@@ -11,8 +11,24 @@
     <string name="status_disconnected">Disconnected</string>
     <string name="status_error">Error</string>
     <string name="vpn_channel_name">goat-client tunnel</string>
-    <string name="vpn_channel_description">Persistent notification while the wg-cp0 tunnel is up.</string>
+    <string name="vpn_channel_description">Persistent notification while the goat-client tunnel is up.</string>
     <string name="vpn_notification_title">goat-client</string>
-    <string name="vpn_notification_text_connecting">Bringing up wg-cp0 tunnel…</string>
-    <string name="vpn_notification_text_connected">wg-cp0 tunnel up</string>
+    <string name="vpn_notification_text_connecting">Bringing up tunnel…</string>
+    <string name="vpn_notification_text_connected">Tunnel up</string>
+
+    <!-- v0.2 mode-triad UI -->
+    <string name="section_mode">Operating mode</string>
+    <string name="card_wgcp0_title">wg-cp0 outer</string>
+    <string name="card_wgcp0_subtitle">Silent control plane</string>
+    <string name="card_innermesh_title">Inner mesh</string>
+    <string name="card_innermesh_subtitle">netbird peer overlay</string>
+    <string name="state_disabled">Disabled</string>
+    <string name="state_idle">Idle</string>
+    <string name="state_connecting">Connecting</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_error">Error</string>
+    <string name="mode_wgcp0_only">wg-cp0 only</string>
+    <string name="mode_netbird_only">Inner mesh only</string>
+    <string name="mode_combined">Combined</string>
+    <string name="mode_no_bundle">Import a bundle to choose a mode. v0.1.x bundles default to wg-cp0-only.</string>
 </resources>

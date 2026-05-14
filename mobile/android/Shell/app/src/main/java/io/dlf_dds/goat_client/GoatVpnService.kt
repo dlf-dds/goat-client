@@ -28,11 +28,20 @@ import kotlinx.coroutines.launch
  *   1. onCreate: create notification channel, build the VPN tunnel
  *      (deferred to first ACTION_START since the gomobile engine
  *      drives the build via [TunAdapterImpl.configureInterface]).
- *   2. onStartCommand(ACTION_START): wire up [TunAdapterImpl] against
- *      this service, get/create the [GoatClient] singleton, launch
- *      a coroutine that calls [Client.run] (which blocks until Stop).
+ *   2. onStartCommand(ACTION_START): read the operator-selected mode
+ *      from [ModeStore], dispatch to the corresponding start path:
+ *        • `wg-cp0-only` — today's existing GoatClient.run path
+ *          (wg-cp0 outer only).
+ *        • `netbird-only` — refused cleanly until Worker A's 76N
+ *          InnerMesh library lands. No tunnel up.
+ *        • `combined` — wg-cp0 outer via today's path; inner-mesh
+ *          half is dormant pending 76N. Notification text surfaces
+ *          the partial state.
  *   3. onStartCommand(ACTION_STOP): call [Client.stop], cancel the
  *      coroutine scope, stopForeground + stopSelf.
+ *
+ * Mode changes from the activity trigger ACTION_STOP + ACTION_START —
+ * the new mode is read here on the next start.
  *
  * The persistent notification is required by Android 8+ for any
  * foreground service. We attach a tap-to-open intent that re-opens
@@ -42,6 +51,7 @@ class GoatVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var engineJob: Job? = null
+    private var activeMode: OperatingMode = OperatingMode.DEFAULT
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -57,8 +67,27 @@ class GoatVpnService : VpnService() {
             Log.i(TAG, "engine already running")
             return
         }
+        activeMode = ModeStore.read(applicationContext)
+        Log.i(TAG, "startEngine: mode=${activeMode.raw}")
         ensureNotificationChannel()
-        startForegroundCompat(buildNotification(getString(R.string.vpn_notification_text_connecting)))
+        startForegroundCompat(buildNotification(notificationTextForMode(activeMode)))
+
+        // netbird-only mode needs Worker A's InnerMesh library. Refuse
+        // cleanly rather than silently fall back — the user picked
+        // "inner only" and would not expect wg-cp0 to come up. Surface
+        // the reason in the notification and stop the service so the
+        // user sees the system VPN indicator drop.
+        if (activeMode == OperatingMode.NETBIRD_ONLY) {
+            Log.w(TAG, "netbird-only mode requires Block 76N InnerMesh library — not yet runtime-supported on this build")
+            updateNotification("Inner-mesh-only mode pending Block 76N. Switch to wg-cp0-only or wait for next build.")
+            // Don't stopSelf immediately — leave the foreground
+            // notification visible so the user reads the reason. The
+            // service stops when the user taps Disconnect.
+            return
+        }
+        if (activeMode == OperatingMode.COMBINED) {
+            Log.i(TAG, "combined mode: starting wg-cp0 outer; inner mesh dormant pending 76N")
+        }
 
         // Attach this service to the process-wide TunAdapter so that the
         // engine's subsequent configureInterface / protectSocket calls
@@ -124,6 +153,18 @@ class GoatVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, notification)
         }
     }
+
+    private fun updateNotification(text: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun notificationTextForMode(mode: OperatingMode): String =
+        when (mode) {
+            OperatingMode.WG_CP0_ONLY -> getString(R.string.vpn_notification_text_connecting)
+            OperatingMode.NETBIRD_ONLY -> "Bringing up inner mesh…"
+            OperatingMode.COMBINED -> "Bringing up combined tunnels…"
+        }
 
     private fun buildNotification(text: String): Notification {
         val openActivity = PendingIntent.getActivity(
