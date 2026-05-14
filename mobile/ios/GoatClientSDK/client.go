@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/trustanchor"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
 )
@@ -51,6 +52,7 @@ type Client struct {
 
 	mu          sync.Mutex
 	mode        string // v0.2 operating mode: wg-cp0-only / netbird-only / combined
+	innerMesh   innermesh.Mesh // populated when mode includes inner mesh; nil otherwise
 	ctxCancel   context.CancelFunc
 	stateAtomic atomic.Value // string — current StateXxx
 }
@@ -220,31 +222,79 @@ func (c *Client) Run(fd int32, interfaceName string, envList *EnvList) error {
 		return err
 	}
 
-	cfg, err := tunnel.FromBundle(parsed)
-	if err != nil {
-		c.stateAtomic.Store(StateError)
-		return fmt.Errorf("derive tunnel config: %w", err)
-	}
-	if interfaceName != "" {
-		cfg.InterfaceName = interfaceName
-	}
-
 	c.mu.Lock()
+	mode := c.mode
+	if mode == "" {
+		mode = "wg-cp0-only" // v0.1.x default if native shell did not SetMode
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctxCancel = cancel
 	c.mu.Unlock()
 	defer cancel()
 
-	// Optimistic connected: tunnel.RunOnMobile only returns on Stop or a
-	// fatal device error, so flipping to Connected before blocking gives
-	// the Swift UI a usable signal. Real handshake-watching is a follow-up
-	// (it would tail Stats() through a goroutine; out of scope here).
-	c.stateAtomic.Store(StateConnected)
-	runErr := tunnel.RunOnMobile(ctx, int(fd), cfg.InterfaceName, &cfg, nil)
-	if runErr != nil {
-		c.stateAtomic.Store(StateError)
-		return runErr
+	hasOuter := mode == "wg-cp0-only" || mode == "combined"
+	hasInner := mode == "netbird-only" || mode == "combined"
+
+	// Bring up inner mesh first when the mode includes it. Connect()
+	// returns on initial-up or ctx cancel; the subsystem keeps running
+	// in its own goroutines after Connect returns.
+	if hasInner {
+		imCfg, err := innermesh.FromBundle(parsed)
+		if err != nil {
+			c.stateAtomic.Store(StateError)
+			return fmt.Errorf("inner mesh config from bundle: %w", err)
+		}
+		mesh := innermesh.New()
+		if err := mesh.Configure(imCfg); err != nil {
+			c.stateAtomic.Store(StateError)
+			_ = mesh.Close()
+			return fmt.Errorf("inner mesh configure: %w", err)
+		}
+		if err := mesh.Connect(ctx); err != nil {
+			c.stateAtomic.Store(StateError)
+			_ = mesh.Close()
+			return fmt.Errorf("inner mesh connect: %w", err)
+		}
+		c.mu.Lock()
+		c.innerMesh = mesh
+		c.mu.Unlock()
+		defer func() {
+			c.mu.Lock()
+			m := c.innerMesh
+			c.innerMesh = nil
+			c.mu.Unlock()
+			if m != nil {
+				discCtx, discCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = m.Disconnect(discCtx)
+				discCancel()
+				_ = m.Close()
+			}
+		}()
 	}
+
+	c.stateAtomic.Store(StateConnected)
+
+	if hasOuter {
+		cfg, err := tunnel.FromBundle(parsed)
+		if err != nil {
+			c.stateAtomic.Store(StateError)
+			return fmt.Errorf("derive tunnel config: %w", err)
+		}
+		if interfaceName != "" {
+			cfg.InterfaceName = interfaceName
+		}
+		runErr := tunnel.RunOnMobile(ctx, int(fd), cfg.InterfaceName, &cfg, nil)
+		if runErr != nil {
+			c.stateAtomic.Store(StateError)
+			return runErr
+		}
+	} else {
+		// netbird-only: no wg-cp0 outer tunnel. Block until Stop()
+		// cancels ctx. The inner mesh keeps running in its own
+		// goroutines; cancellation walks the deferred cleanup above.
+		<-ctx.Done()
+	}
+
 	c.stateAtomic.Store(StateDisconnected)
 	return nil
 }
@@ -319,6 +369,7 @@ func (c *Client) GetStatusJSON() string {
 	}
 	c.mu.Lock()
 	mode := c.mode
+	mesh := c.innerMesh
 	c.mu.Unlock()
 	haveBundle := false
 	if c.cfgDir != "" {
@@ -326,7 +377,14 @@ func (c *Client) GetStatusJSON() string {
 			haveBundle = true
 		}
 	}
-	return fmt.Sprintf(`{"state":%q,"mode":%q,"bundle_imported":%t,"inner_mesh":null}`, state, mode, haveBundle)
+	innerJSON := "null"
+	if mesh != nil {
+		st := mesh.State().String()
+		stats, _ := mesh.Stats()
+		innerJSON = fmt.Sprintf(`{"state":%q,"peer_count":%d,"bytes_in":%d,"bytes_out":%d}`,
+			st, stats.PeerCount, stats.BytesIn, stats.BytesOut)
+	}
+	return fmt.Sprintf(`{"state":%q,"mode":%q,"bundle_imported":%t,"inner_mesh":%s}`, state, mode, haveBundle, innerJSON)
 }
 
 // SetCustomLogger lets Swift attach an os_log-backed logger after NewClient.

@@ -29,14 +29,10 @@ import kotlinx.coroutines.launch
  *      (deferred to first ACTION_START since the gomobile engine
  *      drives the build via [TunAdapterImpl.configureInterface]).
  *   2. onStartCommand(ACTION_START): read the operator-selected mode
- *      from [ModeStore], dispatch to the corresponding start path:
- *        • `wg-cp0-only` — today's existing GoatClient.run path
- *          (wg-cp0 outer only).
- *        • `netbird-only` — refused cleanly until Worker A's 76N
- *          InnerMesh library lands. No tunnel up.
- *        • `combined` — wg-cp0 outer via today's path; inner-mesh
- *          half is dormant pending 76N. Notification text surfaces
- *          the partial state.
+ *      from [ModeStore] and call SetMode on the SDK. The SDK Run
+ *      dispatches by mode internally (wg-cp0-only / netbird-only /
+ *      combined); inner-mesh state is surfaced via getTunnelStatus
+ *      inner_mesh block.
  *   3. onStartCommand(ACTION_STOP): call [Client.stop], cancel the
  *      coroutine scope, stopForeground + stopSelf.
  *
@@ -72,22 +68,10 @@ class GoatVpnService : VpnService() {
         ensureNotificationChannel()
         startForegroundCompat(buildNotification(notificationTextForMode(activeMode)))
 
-        // netbird-only mode needs Worker A's InnerMesh library. Refuse
-        // cleanly rather than silently fall back — the user picked
-        // "inner only" and would not expect wg-cp0 to come up. Surface
-        // the reason in the notification and stop the service so the
-        // user sees the system VPN indicator drop.
-        if (activeMode == OperatingMode.NETBIRD_ONLY) {
-            Log.w(TAG, "netbird-only mode requires Block 76N InnerMesh library — not yet runtime-supported on this build")
-            updateNotification("Inner-mesh-only mode pending Block 76N. Switch to wg-cp0-only or wait for next build.")
-            // Don't stopSelf immediately — leave the foreground
-            // notification visible so the user reads the reason. The
-            // service stops when the user taps Disconnect.
-            return
-        }
-        if (activeMode == OperatingMode.COMBINED) {
-            Log.i(TAG, "combined mode: starting wg-cp0 outer; inner mesh dormant pending 76N")
-        }
+        // The SDK Run() dispatches by mode internally (wg-cp0-only,
+        // netbird-only, combined). The service just passes through.
+        // Inner-mesh state is surfaced via GetTunnelStatus inner_mesh
+        // block; the activity status cards render per-leg.
 
         // Attach this service to the process-wide TunAdapter so that the
         // engine's subsequent configureInterface / protectSocket calls

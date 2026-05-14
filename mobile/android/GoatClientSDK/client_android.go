@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/trustanchor"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
 )
@@ -52,6 +53,7 @@ type Client struct {
 	since     time.Time
 	bundleSum string // hex-encoded SHA-256 of last imported bundle, for UI
 	mode      string // v0.2 operating mode: wg-cp0-only / netbird-only / combined
+	innerMesh innermesh.Mesh // populated when mode includes inner mesh; nil otherwise
 
 	ctxCancel context.CancelFunc
 }
@@ -216,6 +218,10 @@ func (c *Client) Run(files PlatformFiles, dns *DNSList, dnsReadyListener DnsRead
 	c.state = StateConnecting
 	c.reason = ""
 	c.since = time.Now()
+	mode := c.mode
+	if mode == "" {
+		mode = "wg-cp0-only" // v0.1.x default if Kotlin shell did not SetMode
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctxCancel = cancel
 	c.mu.Unlock()
@@ -229,6 +235,60 @@ func (c *Client) Run(files PlatformFiles, dns *DNSList, dnsReadyListener DnsRead
 		return err
 	}
 	_ = cfgPath // retained for future audit logging
+
+	hasOuter := mode == "wg-cp0-only" || mode == "combined"
+	hasInner := mode == "netbird-only" || mode == "combined"
+
+	// Bring up inner mesh first when the mode includes it.
+	if hasInner {
+		imCfg, err := innermesh.FromBundle(parsed)
+		if err != nil {
+			c.fail(err.Error())
+			return fmt.Errorf("inner mesh config from bundle: %w", err)
+		}
+		mesh := innermesh.New()
+		if err := mesh.Configure(imCfg); err != nil {
+			c.fail(err.Error())
+			_ = mesh.Close()
+			return fmt.Errorf("inner mesh configure: %w", err)
+		}
+		if err := mesh.Connect(ctx); err != nil {
+			c.fail(err.Error())
+			_ = mesh.Close()
+			return fmt.Errorf("inner mesh connect: %w", err)
+		}
+		c.mu.Lock()
+		c.innerMesh = mesh
+		c.mu.Unlock()
+		defer func() {
+			c.mu.Lock()
+			m := c.innerMesh
+			c.innerMesh = nil
+			c.mu.Unlock()
+			if m != nil {
+				discCtx, discCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = m.Disconnect(discCtx)
+				discCancel()
+				_ = m.Close()
+			}
+		}()
+	}
+
+	if !hasOuter {
+		// netbird-only: no wg-cp0 outer tunnel. Block until Stop()
+		// cancels ctx. The inner mesh keeps running in its own
+		// goroutines; cancellation walks the deferred cleanup above.
+		c.mu.Lock()
+		c.state = StateConnected
+		c.since = time.Now()
+		c.mu.Unlock()
+		<-ctx.Done()
+		c.mu.Lock()
+		c.state = StateDisconnected
+		c.since = time.Now()
+		c.mu.Unlock()
+		return nil
+	}
 
 	cfg, err := tunnel.FromBundle(parsed)
 	if err != nil {
@@ -261,10 +321,6 @@ func (c *Client) Run(files PlatformFiles, dns *DNSList, dnsReadyListener DnsRead
 		dnsReadyListener.OnReady()
 	}
 
-	// Optimistic connected: tunnel.RunOnMobile only returns on Stop or a
-	// fatal device error, so flipping to Connected before blocking gives
-	// the Kotlin UI a usable signal. Real handshake-watching is a follow-up
-	// (would tail Stats() through a goroutine; out of scope here).
 	c.mu.Lock()
 	c.state = StateConnected
 	c.since = time.Now()
@@ -328,6 +384,18 @@ func (c *Client) SetInfoLogLevel()  {}
 // streaming RPC; this method stays for the at-a-glance UI poll.
 func (c *Client) GetTunnelStatus() string {
 	c.mu.RLock()
+	type innerSnap struct {
+		State     string `json:"state"`
+		PeerCount int    `json:"peer_count"`
+		BytesIn   uint64 `json:"bytes_in"`
+		BytesOut  uint64 `json:"bytes_out"`
+	}
+	var imField interface{}
+	if c.innerMesh != nil {
+		st := c.innerMesh.State().String()
+		stats, _ := c.innerMesh.Stats()
+		imField = innerSnap{State: st, PeerCount: stats.PeerCount, BytesIn: stats.BytesIn, BytesOut: stats.BytesOut}
+	}
 	snap := struct {
 		State      string      `json:"state"`
 		Reason     string      `json:"reason,omitempty"`
@@ -343,7 +411,7 @@ func (c *Client) GetTunnelStatus() string {
 		BundleSum:  c.bundleSum,
 		DeviceName: c.deviceName,
 		Mode:       c.mode,
-		InnerMesh:  nil, // populated by iteration-3 wiring
+		InnerMesh:  imField,
 	}
 	c.mu.RUnlock()
 	b, err := json.Marshal(snap)

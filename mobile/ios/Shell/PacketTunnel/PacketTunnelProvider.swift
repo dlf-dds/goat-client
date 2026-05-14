@@ -8,14 +8,17 @@
 // file descriptor, and hands control to GoatClientSDK on a per-mode start
 // path:
 //
-//   • `wg-cp0-only` — today's GoatClientSDK.Run (wg-cp0 outer only).
-//   • `netbird-only` — Worker A's InnerMesh library starts the inner
-//     netbird mesh; no wg-cp0 outer claimed. Falls back to a clean
-//     error until 76N's library lands.
-//   • `combined` — both tunnels in the same Go runtime (path A per ADR
-//     0840 amendment 2026-05-10b). wg-cp0 via today's Run; inner mesh
-//     pending 76N. Until then we bring up wg-cp0 and surface a
-//     non-fatal warning that the inner half is dormant.
+//   • `wg-cp0-only` — wg-cp0 outer only (v0.1.x regression bar).
+//   • `netbird-only` — inner netbird mesh only (no wg-cp0 outer
+//     claimed). The SDK Run blocks on ctx; the inner-mesh subsystem
+//     keeps its own goroutines running.
+//   • `combined` — both legs in one Go runtime (path A per ADR
+//     0840 amendment 2026-05-10b). wg-cp0 + inner mesh share the
+//     PacketTunnelProvider extension process.
+//
+// Mode dispatch happens inside the SDK Run — the native shell just
+// reads ModeStore and calls setMode/run; the SDK's status JSON
+// (inner_mesh block) surfaces per-leg state.
 //
 // Mode changes from the main app trigger stopTunnel + startTunnel — the
 // new mode is read from ModeStore on the next startTunnel.
@@ -76,11 +79,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         os_log("stopTunnel invoked: reason=%{public}d", log: Self.log, type: .info, reason.rawValue)
         #if canImport(GoatClientSDK)
-        // The Go side's Stop() is idempotent.
+        // The Go side's Stop() is idempotent; it tears down both legs
+        // (wg-cp0 outer + inner mesh) via ctx cancellation in Run.
         currentClient?.stop()
-        // TODO(76N): also call into the InnerMesh handle's Down() once
-        // Worker A's library is wired; today the inner-mesh path is a
-        // stub so there's nothing additional to tear down.
         #endif
         clientTask?.cancel()
         clientTask = nil
@@ -125,26 +126,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
-        // Until 76N publishes a netbird inner-mesh start path through the
-        // gomobile SDK, the netbird-only and combined modes cannot
-        // actually drive the inner half of the tunnel. Refuse cleanly
-        // for netbird-only (no fallback is correct — the user asked
-        // explicitly for "inner only"). For combined, bring up wg-cp0
-        // and surface a non-fatal warning that the inner half is dormant
-        // until the foundation track lands; mode-aware status cards in
-        // the UI will display this correctly via TunnelCardState.idle.
-        if mode == .netbirdOnly {
-            let err = NSError(domain: "io.dlf-dds.goat-client.PacketTunnel",
-                              code: 3,
-                              userInfo: [NSLocalizedDescriptionKey:
-                                "netbird-only mode is not yet runtime-supported on this build — awaiting Block 76N InnerMesh library. Pick wg-cp0-only or wait for the next build."])
-            completionHandler(err)
-            return
-        }
-        if mode == .combined {
-            os_log("combined mode: starting wg-cp0 outer; inner mesh is dormant pending 76N",
-                   log: Self.log, type: .default)
-        }
+        // The SDK Run() dispatches by mode internally (wg-cp0-only,
+        // netbird-only, combined). The native shell just passes through.
+        // Inner-mesh state is surfaced via GetTunnelStatus inner_mesh
+        // block; the SwiftUI status cards render per-leg.
 
         let device = UIDevice.current.name
         let osName = "iOS"
