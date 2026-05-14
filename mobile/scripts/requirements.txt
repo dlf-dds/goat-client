@@ -1,0 +1,21 @@
+# mobile/scripts/ Python deps.
+#
+# Install with:
+#   python3 -m venv mobile/scripts/.venv
+#   source mobile/scripts/.venv/bin/activate
+#   pip install -r mobile/scripts/requirements.txt
+#
+# Pinned conservatively; bump together with `pip install --upgrade`
+# after exercising the full script suite against the upstream APIs.
+
+# JWT signing for ASC API (ES256 / ECDSA P-256).
+pyjwt>=2.8,<3
+cryptography>=42,<50
+
+# Google Play Developer Publishing API client + auth.
+google-api-python-client>=2.130,<3
+google-auth>=2.30,<3
+
+# Pretty CLI tables for status output (optional but used by manage_testers
+# subcommands for build / tester listings).
+rich>=13.0,<14

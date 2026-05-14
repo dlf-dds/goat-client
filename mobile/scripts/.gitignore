@@ -1,0 +1,6 @@
+# Python virtualenv (per-checkout, not committed).
+.venv/
+
+# Pyc cache.
+__pycache__/
+*.pyc
