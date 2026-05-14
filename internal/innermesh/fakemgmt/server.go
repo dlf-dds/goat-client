@@ -30,6 +30,12 @@ type Server struct {
 	// each test gets an isolated key.
 	wgKey wgtypes.Key
 
+	// signalURI is the host:port the fake tells embedded clients to
+	// dial for the netbird signal exchange (returned in
+	// LoginResponse.NetbirdConfig.Signal.Uri). Empty when callers only
+	// exercise GetServerKey/IsHealthy and don't drive Login.
+	signalURI string
+
 	mu       sync.Mutex
 	grpcSrv  *grpc.Server
 	listener net.Listener
@@ -37,15 +43,32 @@ type Server struct {
 	stopped  bool
 }
 
+// Option configures a Server at construction. Use WithSignalURI to
+// point Login responses at a fakesignal listener.
+type Option func(*Server)
+
+// WithSignalURI sets the host:port that Login responses will tell
+// clients to use for the signal-exchange RPC. Required for any test
+// that drives the embed client through Connect (the engine's signal
+// dial would otherwise fail). Pass the address from
+// fakesignal.Listen(t).
+func WithSignalURI(uri string) Option {
+	return func(s *Server) { s.signalURI = uri }
+}
+
 // NewServer constructs a Server with a fresh WG keypair. The server
 // is not started — call Serve(ln) or use Listen(t) for the test
 // helper path.
-func NewServer() (*Server, error) {
+func NewServer(opts ...Option) (*Server, error) {
 	key, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("fakemgmt: generate wg key: %w", err)
 	}
-	return &Server{wgKey: key}, nil
+	s := &Server{wgKey: key}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // Serve binds + serves the fake's gRPC service on ln. Returns when
@@ -109,9 +132,9 @@ func (s *Server) PublicKey() wgtypes.Key {
 // "http://" + s.Addr() (gRPC over plaintext for the in-process
 // hermetic case; the real fake mgmt-server gates TLS off via a flag
 // the embed client honors).
-func Listen(t *testing.T) (*Server, error) {
+func Listen(t *testing.T, opts ...Option) (*Server, error) {
 	t.Helper()
-	srv, err := NewServer()
+	srv, err := NewServer(opts...)
 	if err != nil {
 		return nil, err
 	}
