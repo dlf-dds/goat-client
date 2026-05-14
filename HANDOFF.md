@@ -57,6 +57,71 @@
 >
 > ---
 >
+> ## v0.2 foundation build-out (in flight, 2026-05-14)
+>
+> Per [ADR 0840 Amendment 2026-05-13](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/adr/0840-goat-client-cross-platform-daemon-gui.md)
+> and implementation-plan Block 76N–76Q, v0.2 generalises goat-client
+> to **three operating modes** across all platform classes:
+> `wg-cp0-only` (v0.1.x regression bar), `netbird-only` (inner mesh
+> only, via Block 80 crutch tier), `combined` (both tunnels in one
+> process). Three concurrent worker tracks; 76N foundation gates B + C
+> only on **interface freeze**, not on full implementation.
+>
+> | Block | Branch / PR | Worker | Status (2026-05-14) |
+> |---|---|---|---|
+> | **76N** v0.2 foundation — netbird-mesh-as-library + InnerMesh interface + mode-selection + bundle ext + headless smokes | `track/v0.2-foundation-76N` / PR #39 | A | Interface + bundle ext + IPC methods + CI matrix landing here. netbird-library un-strip + in-process fake mgmt-server + headless smokes pending as a follow-up PR off main. |
+> | **76O** v0.2 desktop modes — Fyne mode-selector + mode-aware status + packaging --mode arg | merged via #37 | B | ✅ landed 2026-05-14 (`76f6bcf`). Daemon mode plumbing + IPC getMode/setMode + Fyne UI + setmode CLI + headless mode all on main. |
+> | **76P** v0.2 headless mode flag | folded into #37 | B | ✅ landed 2026-05-14. |
+> | **76Q** v0.2 mobile modes — iOS + Android shells against InnerMesh | merged via #36 | C | ✅ landed 2026-05-14 (`d5e48c0`). iOS + Android shells composed against the v0.2 daemon. |
+>
+> ### Worker A / Worker B interface synthesis (2026-05-13)
+>
+> Worker A (76N) and Worker B (76O/P) independently authored `mode` +
+> `innermesh` packages before discovering each other. PR #37 landed
+> Worker B's full v0.2 placeholder shape (`innermesh.Mesh`,
+> `Connect`/`Disconnect`, `Config` with `{SetupKey, ManagementURL,
+> PreferKernelWG}`, `State()` + `Stats()`, `mode.WGCP0Only` /
+> `NetbirdOnly` / `Combined`, `mode.Default = Combined`,
+> `IncludesWGCP0`/`IncludesNetbird` helpers, `Display`, persist,
+> `Fake`).
+>
+> Worker A's foundation PR (#39) adopts B's interface shape as
+> canonical and adds the load-bearing extensions the brief mandates
+> that B's placeholder didn't carry:
+>
+> 1. `bundle.InnerMeshSetup` + `bundle.MobileCert` fields, gated by
+>    omitempty so v0.1.x bundles continue to verify byte-identically
+>    (asserted by `TestV0_2FieldsOmitWhenEmpty`).
+> 2. `innermesh.Config` gains `AdminAccessToken` + `MobileCert` +
+>    `PreSharedKey` — Block 80F per-device mTLS client cert + key, and
+>    the optional netbird WG PSK pass-through.
+> 3. `innermesh.Mesh.Logs(tail int) []string` — rolling log buffer
+>    reader (additive interface extension).
+> 4. `innermesh.FromBundle` — derives a Config from a verified
+>    EnrollmentBundle; defensive-copies the []byte fields.
+> 5. Five IPC methods: `getInnerMeshStatus`, `setInnerMeshProfile`,
+>    `enableInnerMesh`, `disableInnerMesh`, `getInnerMeshDiagnostics`.
+> 6. PR-gating cross-compile matrix for the v0.2 packages across the
+>    six desktop targets (mobile covered by `mobile.yml`).
+>
+> No renames; no churn on Worker B's or Worker C's merged code.
+>
+> ### v0.2 foundation blockers
+>
+> _Append blockers below as a one-liner; format `YYYY-MM-DD HH:MM <track> — <blocker>`._
+>
+> - 2026-05-14 11:30 76N — netbird-library un-strip pending: need to
+>   decide go.mod replace vs vendor vs direct require at
+>   netbird@3fc5a8d4. Brief forbids upstream-pin bump. To be done in a
+>   follow-up PR off main once #39 merges.
+> - 2026-05-14 11:30 76N — in-process fake netbird mgmt-server for
+>   tests pending; required for `netbird-only` headless smoke. Same
+>   follow-up PR as the un-strip.
+> - 2026-05-14 11:30 76N — three headless smokes (`make smoke-modes`)
+>   pending; depend on un-strip + fake mgmt-server.
+>
+> ---
+>
 > ## v0.2 build-out (added 2026-05-13)
 >
 > Per ADR 0840 amendment 2026-05-13 (three-mode triad: wg-cp0-only /

@@ -80,3 +80,51 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+
+  v02-cross-compile:
+    name: v0.2 packages cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    # Block 76N verdict-gate item 1: the v0.2 library packages
+    # (innermesh, mode, bundle, daemon, ipc + cmd/goat-clientd entry
+    # point) must compile cleanly for the six desktop targets on
+    # every PR. Today's PR-gating ci.yml only exercises ubuntu-latest;
+    # the six-target matrix lives in release.yml and runs only on tag
+    # push — too late to catch a cross-platform regression before
+    # merge.
+    #
+    # Scope: pure-Go v0.2 packages only. CGO_ENABLED=0, so a stock
+    # setup-go on ubuntu-latest is sufficient — no per-OS
+    # cross-toolchain images needed. The full goat-client Fyne binary
+    # (with CGO+GL deps) stays in release.yml; only fix-as-they-land
+    # round-trips through this PR gate. Mobile targets (ios/arm64,
+    # android/{arm64,amd64}) are covered by mobile.yml's gomobile bind
+    # smoke, which transitively pulls these packages in via the
+    # GoatClientSDK entry points.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: go build (v0.2 packages, CGO off)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build ./internal/innermesh/... \
+                   ./internal/mode/... \
+                   ./internal/bundle/... \
+                   ./internal/daemon/... \
+                   ./internal/ipc/... \
+                   ./cmd/goat-clientd/...
