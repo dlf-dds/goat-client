@@ -108,10 +108,13 @@ on per-platform build tags + a runtime check. We force userspace by:
 ## Mesh impl plumbing — via netbird's public `client/embed` package
 
 **Discovery during M1**: netbird ships a public Go-import-safe
-package at `github.com/netbirdio/netbird/client/embed` designed for
-exactly this case — embedding netbird-as-library inside another Go
-program without a separate daemon install. The `embed.Client`
-surface maps 1:1 to our `Mesh` interface:
+package at
+[`github.com/netbirdio/netbird/client/embed`](https://github.com/netbirdio/netbird/blob/master/client/embed/doc.go)
+designed for exactly this case — the upstream package doc opens with
+"Package embed provides a way to embed the NetBird client directly
+into Go programs without requiring a separate NetBird client
+installation." The `embed.Client` surface maps 1:1 to our `Mesh`
+interface:
 
 | `Mesh` method   | `embed.Client` call |
 |-----------------|---------------------|
@@ -188,6 +191,42 @@ overlapped with goat-client's existing deps:
 When goat eventually bumps the netbird pin, this replace block needs
 to be re-synced against netbird's new `go.mod` along with the
 embed-CA patch rebase.
+
+## Validation status (what M1 does and doesn't prove)
+
+M1 (this commit / PR #41) demonstrates **compile-time integration
+only**:
+
+- The `replace` block resolves netbird via the published goat fork.
+- `internal/innermesh/netbird.go` imports `client/embed` and
+  satisfies the `Mesh` interface (asserted at compile time via
+  `var _ Mesh = (*Netbird)(nil)`).
+- `go build ./...` is green on the host + cross-compile is green
+  for the six desktop targets with CGO off.
+- The mirrored `replace` block makes `internal/tunnel/` continue to
+  build against netbird's `wireguard-go` fork.
+
+M1 does **not** prove the embed integration actually works end-to-
+end. We have not yet:
+
+- Called `Configure` + `Connect` on a real `Netbird` instance
+  against a real (or fake) netbird mgmt-server.
+- Verified `embed.Options` defaults are sane for our headless +
+  no-daemon-install posture (the upstream embed doc's example sets
+  `LogOutput: io.Discard` and gives no `ConfigPath`; we set
+  `LogOutput: <ring buffer>` and leave `ConfigPath` empty — should
+  Just Work per embed's "if empty, the config will be stored in
+  memory and not persisted" comment, but unproven).
+- Validated that netbird's `wireguard-go` fork is wire-compatible
+  with goat's existing `internal/tunnel/` callers at runtime, not
+  just at compile time.
+
+These are what M2 (Configure + Up against fake mgmt) and M4 (three
+headless smokes) will actually exercise. If any of those reveal an
+incompatibility, the load-bearing M0+M1 surface might need
+revisiting — most likely failure mode is `embed.Options` fields we
+left unset that turn out to be required for our headless install
+shape.
 
 ## Incremental milestones (this branch)
 

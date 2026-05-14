@@ -119,6 +119,16 @@
 >   follow-up PR as the un-strip.
 > - 2026-05-14 11:30 76N — three headless smokes (`make smoke-modes`)
 >   pending; depend on un-strip + fake mgmt-server.
+> - 2026-05-14 ~~go.mod strategy~~ ✅ resolved: `replace` directive
+>   against `github.com/dfarrel1/netbird` branch `goat-embed-ca-2026-05`
+>   (commit `32d04da19`) plus mirrors of netbird's 8-entry replace
+>   block. PR #41 (track/v0.2-netbird-unstrip-76N) M0+M1 green.
+> - 2026-05-14 ~~fork re-export wrapper need~~ ✅ moot: netbird ships
+>   a public `client/embed` package designed for embed-as-library; the
+>   `internal`-package import blocker we predicted doesn't apply
+>   because `embed.Client` is the upstream-maintained re-export.
+>   Mapping table + upstream-doc link in
+>   [`internal/innermesh/UNSTRIP.md`](internal/innermesh/UNSTRIP.md).
 >
 > ---
 >
