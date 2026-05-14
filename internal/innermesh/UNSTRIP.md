@@ -105,43 +105,89 @@ on per-platform build tags + a runtime check. We force userspace by:
    the impl ignores it for v0.2 — the field exists so callers don't
    have to migrate when a future kernel-WG opt-in lands.
 
-## Mesh impl plumbing
+## Mesh impl plumbing — via netbird's public `client/embed` package
 
-The `Fake` impl stays unchanged (used by tests and by Workers B + C
-for offline scaffolding). The real impl lives alongside in the same
-package:
+**Discovery during M1**: netbird ships a public Go-import-safe
+package at `github.com/netbirdio/netbird/client/embed` designed for
+exactly this case — embedding netbird-as-library inside another Go
+program without a separate daemon install. The `embed.Client`
+surface maps 1:1 to our `Mesh` interface:
+
+| `Mesh` method   | `embed.Client` call |
+|-----------------|---------------------|
+| `Configure(cfg)` | (lazy) build `embed.Options` from `Config`; client constructed at Connect |
+| `Connect(ctx)`   | `embed.New(opts)` then `client.Start(ctx)` |
+| `Disconnect(ctx)`| `client.Stop(ctx)` |
+| `State()`        | derived from internal lifecycle flags |
+| `Stats()`        | `client.Status()` → aggregate `peer.FullStatus.Peers[].Bytes{Tx,Rx}` + `LastWireguardHandshake` |
+| `Logs(tail)`     | ring buffer fed from `embed.Options.LogOutput` (`io.Writer`) |
+| `Close()`        | `client.Stop` + nil out |
+
+This obviates the original concern about Go's `internal` package
+rule blocking direct import of `client/internal/engine` from
+outside `github.com/netbirdio/netbird/client/...`. `embed` is the
+upstream-maintained wrapper that *is* allowed to import the
+internal engine; we just consume `embed`.
 
 ```go
-// internal/innermesh/netbird.go (new — landing across this branch)
+// internal/innermesh/netbird.go (landing as part of M1)
 
-// Netbird is a Mesh implementation backed by netbird's
-// client/internal/engine. Constructed by NewNetbird(opts), returned
-// by innermesh.New() once this code lands (today innermesh.New()
-// returns the Fake).
 type Netbird struct {
-    engine *engine.Engine
-    cfg    Config
-    state  State
-    logs   []string
-    mu     sync.Mutex
-    // ... timer, log-hook plumbing
+    mu       sync.Mutex
+    cfg      Config
+    client   *netbird.Client  // *embed.Client, aliased on import
+    state    State
+    logBuf   *ringWriter
+    deviceID string
+    // ... closed flag, upAt timestamp
 }
 
-func NewNetbird(opts NetbirdOptions) (*Netbird, error) { /* ... */ }
-
-func (n *Netbird) Configure(cfg Config) error { /* engine config */ }
-func (n *Netbird) Connect(ctx context.Context) error { /* engine.Run */ }
-func (n *Netbird) Disconnect(ctx context.Context) error { /* engine.Stop */ }
-func (n *Netbird) State() State { /* derive from engine */ }
-func (n *Netbird) Stats() (Stats, error) { /* engine.GetStatusManager() */ }
-func (n *Netbird) Logs(tail int) []string { /* ring buffer fed from logrus hook */ }
-func (n *Netbird) Close() error { /* engine + iface release */ }
+func NewNetbird(deviceID string) *Netbird { ... }
+// Configure / Connect / Disconnect / State / Stats / Logs / Close
+// satisfy the Mesh interface; var _ Mesh = (*Netbird)(nil) asserts.
 ```
+
+The `Fake` impl stays unchanged (used by tests and by Workers B + C
+for offline scaffolding).
 
 `innermesh.New()` switches over from `NewFake()` to `NewNetbird()`
 in a separate commit at the end of this branch so the milestone
 where the Mesh impl is "real but unproven" is distinct from the
 milestone where the daemon starts using it.
+
+## go.mod replace-block adoption
+
+Because Go modules don't propagate `replace` directives from
+required modules, our `go.mod` must mirror the replaces from
+netbird's go.mod. As of `32d04da19` that's eight directives:
+
+```go
+replace github.com/netbirdio/netbird       => github.com/dfarrel1/netbird@<pinned-SHA>
+replace github.com/kardianos/service       => github.com/netbirdio/service@<pin>
+replace github.com/getlantern/systray      => github.com/netbirdio/systray@<pin>
+replace golang.zx2c4.com/wireguard         => github.com/netbirdio/wireguard-go@<pin>
+replace github.com/cloudflare/circl        => github.com/cunicu/circl@<pin>
+replace github.com/pion/ice/v4             => github.com/netbirdio/ice/v4@<pin>
+replace github.com/libp2p/go-netroute      => github.com/netbirdio/go-netroute@<pin>
+replace github.com/dexidp/dex              => github.com/netbirdio/dex@<pin>
+replace github.com/mailru/easyjson         => github.com/netbirdio/easyjson@<pin>
+```
+
+Most are pure indirect deps and don't touch our code. Two
+overlapped with goat-client's existing deps:
+
+- **`golang.zx2c4.com/wireguard`** — goat-client's `internal/tunnel/`
+  uses this. netbird's fork (`netbirdio/wireguard-go`) is API-
+  compatible: `internal/tunnel/` builds clean on all six desktop
+  targets after the replace. If a future netbird bump breaks this,
+  the fix is to update `internal/tunnel/` for the new API.
+- **`github.com/getlantern/systray`** — goat-client uses
+  `fyne.io/systray` (different package), so this replace is a no-op
+  for us.
+
+When goat eventually bumps the netbird pin, this replace block needs
+to be re-synced against netbird's new `go.mod` along with the
+embed-CA patch rebase.
 
 ## Incremental milestones (this branch)
 
