@@ -16,22 +16,24 @@ import (
 
 // mainWindow is the goat-client GUI's primary window: a status header
 // (state indicator + label + connect/disconnect button) above tabs for
-// Bundle / Status / Diagnostics. The header reflects the same state the
-// systray icon shows; the two are kept in sync by polling the daemon.
+// Bundle / Status / Settings / Diagnostics. The header reflects the
+// same state the systray icon shows; the two are kept in sync by
+// polling the daemon.
 type mainWindow struct {
 	app    fyne.App
 	win    fyne.Window
 	client ipc.Client
 	notify *notifier
 
-	indicator   *canvas.Circle
-	stateLabel  *widget.Label
-	connectBtn  *widget.Button
-	statusPane  *statusPane
-	diagsPane   *diagnosticsPane
-	bundlePane  *bundlePane
-	tabs        *container.AppTabs
-	pollCancel  context.CancelFunc
+	indicator    *canvas.Circle
+	stateLabel   *widget.Label
+	connectBtn   *widget.Button
+	statusPane   *statusPane
+	diagsPane    *diagnosticsPane
+	bundlePane   *bundlePane
+	settingsPane *settingsPane
+	tabs         *container.AppTabs
+	pollCancel   context.CancelFunc
 }
 
 // goatAppIconResource is the Fyne resource handed to a.SetIcon / w.SetIcon
@@ -65,10 +67,17 @@ func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
 		mw.notify.Send("Bundle applied", "Tunnel configuration updated.")
 		mw.statusPane.Refresh()
 	})
+	mw.settingsPane = newSettingsPane(client)
+	mw.settingsPane.SetWindow(w)
+	mw.settingsPane.SetOnModeChanged(func(newMode string) {
+		mw.notify.Send("Mode switched", "goat-client is now in "+newMode+".")
+		mw.statusPane.Refresh()
+	})
 
 	mw.tabs = container.NewAppTabs(
 		container.NewTabItem("Bundle", mw.bundlePane.Content()),
 		container.NewTabItem("Status", mw.statusPane.Content()),
+		container.NewTabItem("Settings", mw.settingsPane.Content()),
 		container.NewTabItem("Diagnostics", mw.diagsPane.Content()),
 	)
 
@@ -89,6 +98,9 @@ func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
 }
 
 func (m *mainWindow) Show() {
+	// Seed Settings pane with current daemon mode before polling so the
+	// radio reflects reality on first show.
+	go m.settingsPane.Refresh()
 	m.startPolling()
 	m.win.SetCloseIntercept(func() {
 		m.stopPolling()
@@ -137,6 +149,10 @@ func (m *mainWindow) pollOnce(ctx context.Context) {
 			case 1:
 				m.statusPane.apply(st)
 			case 2:
+				// Settings tab; refresh radio if mode drifted from
+				// daemon's view (e.g. CLI setmode in another terminal).
+				m.settingsPane.Refresh()
+			case 3:
 				m.diagsPane.Refresh()
 			}
 		}

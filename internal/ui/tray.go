@@ -11,20 +11,30 @@ import (
 	"fyne.io/systray"
 
 	"github.com/dlf-dds/goat-client/internal/ipc"
+	"github.com/dlf-dds/goat-client/internal/mode"
 )
 
 // trayApp is the parent-process view: just a systray. The Fyne window
 // runs as a separate child process spawned on demand. This mirrors the
 // netbird upstream pattern and avoids the macOS main-thread conflict
 // between fyne.io/systray's NSStatusItem and Fyne's NSApplication.
+//
+// v0.2: tray honors the current Mode. Single-tunnel modes show one icon
+// + one Status line; combined mode shows a stacked icon + two Status
+// lines (outer wg-cp0 + inner netbird) so operators can read both legs
+// at a glance.
 type trayApp struct {
 	addr   string
 	client ipc.Client
 
 	mu        sync.Mutex
 	lastState ipc.State
+	lastInner ipc.State
+	lastMode  mode.Mode
 
+	mMode       *systray.MenuItem
 	mStatus     *systray.MenuItem
+	mInner      *systray.MenuItem
 	mConnect    *systray.MenuItem
 	mDisconnect *systray.MenuItem
 	mOpen       *systray.MenuItem
@@ -52,11 +62,16 @@ func (t *trayApp) onReady() {
 	systray.SetTitle("")
 	systray.SetTooltip("goat-client")
 
-	t.mStatus = systray.AddMenuItem("Status: Disconnected", "Current tunnel state")
+	t.mMode = systray.AddMenuItem("Mode: …", "Active v0.2 mode")
+	t.mMode.Disable()
+	t.mStatus = systray.AddMenuItem("wg-cp0: Disconnected", "Outer tunnel state")
 	t.mStatus.Disable()
+	t.mInner = systray.AddMenuItem("netbird: Disconnected", "Inner-mesh state")
+	t.mInner.Disable()
+	t.mInner.Hide()
 	systray.AddSeparator()
-	t.mConnect = systray.AddMenuItem("Connect", "Bring the wg-cp0 tunnel up")
-	t.mDisconnect = systray.AddMenuItem("Disconnect", "Bring the wg-cp0 tunnel down")
+	t.mConnect = systray.AddMenuItem("Connect", "Bring the active mode's tunnels up")
+	t.mDisconnect = systray.AddMenuItem("Disconnect", "Bring the active mode's tunnels down")
 	systray.AddSeparator()
 	t.mOpen = systray.AddMenuItem("Open window...", "Open the goat-client window")
 	t.mImport = systray.AddMenuItem("Import bundle...", "Open the bundle import dialog")
@@ -160,23 +175,72 @@ func (t *trayApp) refresh(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	m, _ := mode.Parse(st.Mode)
+	if !m.Valid() {
+		m = mode.WGCP0Only
+	}
+	var innerState ipc.State
+	if st.InnerMesh != nil {
+		innerState = st.InnerMesh.State
+	} else {
+		innerState = ipc.StateDisconnected
+	}
 	t.mu.Lock()
-	changed := st.State != t.lastState
+	changed := st.State != t.lastState || innerState != t.lastInner || m != t.lastMode
 	t.lastState = st.State
+	t.lastInner = innerState
+	t.lastMode = m
 	t.mu.Unlock()
 
 	if changed {
-		systray.SetIcon(iconForState(st.State))
+		systray.SetIcon(iconForMode(m, st.State, innerState))
 	}
+	if t.mMode != nil {
+		t.mMode.SetTitle("Mode: " + m.Display())
+	}
+	// Single-tunnel modes hide the leg that isn't running; combined mode
+	// shows both.
 	if t.mStatus != nil {
-		t.mStatus.SetTitle("Status: " + stateLabel(st.State))
+		if m.IncludesWGCP0() {
+			t.mStatus.SetTitle("wg-cp0: " + stateLabel(st.State))
+			t.mStatus.Show()
+		} else {
+			t.mStatus.Hide()
+		}
+	}
+	if t.mInner != nil {
+		if m.IncludesNetbird() {
+			t.mInner.SetTitle("netbird: " + stateLabel(innerState))
+			t.mInner.Show()
+		} else {
+			t.mInner.Hide()
+		}
 	}
 	if t.mConnect != nil && t.mDisconnect != nil {
-		switch st.State {
-		case ipc.StateConnected, ipc.StateConnecting:
+		// "Connected" in combined mode means both legs are up. Treat
+		// either leg connecting as "in flight" so we don't show Connect.
+		anyUp := false
+		anyInFlight := false
+		if m.IncludesWGCP0() {
+			switch st.State {
+			case ipc.StateConnected:
+				anyUp = true
+			case ipc.StateConnecting:
+				anyInFlight = true
+			}
+		}
+		if m.IncludesNetbird() {
+			switch innerState {
+			case ipc.StateConnected:
+				anyUp = true
+			case ipc.StateConnecting:
+				anyInFlight = true
+			}
+		}
+		if anyUp || anyInFlight {
 			t.mConnect.Disable()
 			t.mDisconnect.Enable()
-		default:
+		} else {
 			t.mConnect.Enable()
 			t.mDisconnect.Disable()
 		}
