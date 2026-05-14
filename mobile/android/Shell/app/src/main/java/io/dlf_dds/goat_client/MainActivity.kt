@@ -335,22 +335,48 @@ data class StatusSnapshot(
     val since: String,
     val bundleSum: String,
     val deviceName: String,
+    val mode: String = "",
+    val innerMesh: InnerMeshSnapshot? = null,
 ) {
     companion object {
         fun unconfigured() = StatusSnapshot("unconfigured", "", "", "", "")
         fun parse(json: String): StatusSnapshot {
             return try {
                 val o = JSONObject(json)
+                val im = o.optJSONObject("inner_mesh")?.let { InnerMeshSnapshot.parse(it) }
                 StatusSnapshot(
                     state      = o.optString("state", "unconfigured"),
                     reason     = o.optString("reason", ""),
                     since      = o.optString("since", ""),
                     bundleSum  = o.optString("bundleSum", ""),
                     deviceName = o.optString("deviceName", ""),
+                    mode       = o.optString("mode", ""),
+                    innerMesh  = im,
                 )
             } catch (_: Throwable) {
                 unconfigured()
             }
         }
+    }
+}
+
+/**
+ * v0.2 inner-mesh substate carried under `inner_mesh` in the SDK status
+ * JSON. Mirrors the desktop daemon ipc.InnerMeshInfo shape. All fields
+ * are zero/empty when the inner-mesh subsystem is not running.
+ */
+data class InnerMeshSnapshot(
+    val state: String,
+    val peerCount: Int,
+    val bytesIn: Long,
+    val bytesOut: Long,
+) {
+    companion object {
+        fun parse(o: JSONObject): InnerMeshSnapshot = InnerMeshSnapshot(
+            state     = o.optString("state", ""),
+            peerCount = o.optInt("peer_count", 0),
+            bytesIn   = o.optLong("bytes_in", 0L),
+            bytesOut  = o.optLong("bytes_out", 0L),
+        )
     }
 }

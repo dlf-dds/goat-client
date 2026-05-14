@@ -157,6 +157,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // implementations of the listener protocols.
         let client = GoatClientSDKNewClient(cfgDir, stateFile, device, osVersion, osName, nil, nil)
         currentClient = client
+        // Tell the SDK which v0.2 mode to dispatch on. The native ModeStore
+        // is the source of truth (App Group UserDefaults); the SDK Client
+        // echoes it for status-JSON parity with the desktop daemon.
+        client?.setMode(mode.rawValue)
 
         // Init logger to a file inside the App Group container so logs
         // survive the extension being torn down.

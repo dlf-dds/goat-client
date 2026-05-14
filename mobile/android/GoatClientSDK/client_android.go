@@ -51,6 +51,7 @@ type Client struct {
 	reason    string // populated when state == StateError
 	since     time.Time
 	bundleSum string // hex-encoded SHA-256 of last imported bundle, for UI
+	mode      string // v0.2 operating mode: wg-cp0-only / netbird-only / combined
 
 	ctxCancel context.CancelFunc
 }
@@ -328,27 +329,46 @@ func (c *Client) SetInfoLogLevel()  {}
 func (c *Client) GetTunnelStatus() string {
 	c.mu.RLock()
 	snap := struct {
-		State      string `json:"state"`
-		Reason     string `json:"reason,omitempty"`
-		Since      string `json:"since"`
-		BundleSum  string `json:"bundleSum,omitempty"`
-		DeviceName string `json:"deviceName,omitempty"`
+		State      string      `json:"state"`
+		Reason     string      `json:"reason,omitempty"`
+		Since      string      `json:"since"`
+		BundleSum  string      `json:"bundleSum,omitempty"`
+		DeviceName string      `json:"deviceName,omitempty"`
+		Mode       string      `json:"mode,omitempty"`
+		InnerMesh  interface{} `json:"inner_mesh"`
 	}{
 		State:      c.state,
 		Reason:     c.reason,
 		Since:      c.since.UTC().Format(time.RFC3339),
 		BundleSum:  c.bundleSum,
 		DeviceName: c.deviceName,
+		Mode:       c.mode,
+		InnerMesh:  nil, // populated by iteration-3 wiring
 	}
 	c.mu.RUnlock()
 	b, err := json.Marshal(snap)
 	if err != nil {
-		// json.Marshal of a fixed shape only fails on impossible
-		// inputs; emit a defensive payload rather than panic across
-		// the gomobile boundary.
 		return `{"state":"error","reason":"status marshal failed"}`
 	}
 	return string(b)
+}
+
+// SetMode tells the SDK which v0.2 operating mode the next Run will
+// drive. Accepts the canonical kebab-case raw values from
+// internal/mode (wg-cp0-only / netbird-only / combined). Safe to call
+// before Run, between Stop and Run, or during a mode switch.
+func (c *Client) SetMode(mode string) {
+	c.mu.Lock()
+	c.mode = mode
+	c.mu.Unlock()
+}
+
+// GetMode returns the mode the SDK will dispatch on for the next Run.
+// Empty string when SetMode has not been called.
+func (c *Client) GetMode() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.mode
 }
 
 // loadVerifiedBundle reads the persisted bundle and re-verifies it against

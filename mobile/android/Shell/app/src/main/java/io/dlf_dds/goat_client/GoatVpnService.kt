@@ -94,6 +94,10 @@ class GoatVpnService : VpnService() {
         // route through VpnService.Builder / VpnService.protect instead
         // of the noop fallback the activity creates during importBundle.
         val client = GoatClient.acquireForVpnService(applicationContext, this)
+        // Tell the SDK which v0.2 mode to dispatch on. ModeStore is the
+        // source of truth (SharedPreferences); the SDK Client echoes it
+        // for status-JSON parity with the desktop daemon.
+        client.setMode(activeMode.raw)
 
         engineJob = scope.launch {
             try {

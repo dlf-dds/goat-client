@@ -50,6 +50,7 @@ type Client struct {
 	dnsManager            DnsManager
 
 	mu          sync.Mutex
+	mode        string // v0.2 operating mode: wg-cp0-only / netbird-only / combined
 	ctxCancel   context.CancelFunc
 	stateAtomic atomic.Value // string — current StateXxx
 }
@@ -262,14 +263,70 @@ func (c *Client) Stop() {
 }
 
 // GetTunnelStatus returns one of StateDisconnected / StateConnecting /
-// StateConnected / StateError. The Swift main-app polls this for the
-// status pane; the NEPacketTunnelProvider also reads it after Run returns.
+// StateConnected / StateError. Bare-state getter kept for backward
+// compatibility with the v0.1.x Swift callers; the v0.2 status surface
+// is GetStatusJSON below.
 func (c *Client) GetTunnelStatus() string {
 	v, _ := c.stateAtomic.Load().(string)
 	if v == "" {
 		return StateDisconnected
 	}
 	return v
+}
+
+// SetMode tells the SDK which v0.2 operating mode the next Run will
+// drive. Accepts the canonical kebab-case raw values from
+// internal/mode (wg-cp0-only / netbird-only / combined); unknown
+// strings are stored as-is so the daemon-side validation surface
+// (when introduced) stays the single source of truth. Safe to call
+// before Run, between Stop and Run, or during a mode switch.
+func (c *Client) SetMode(mode string) {
+	c.mu.Lock()
+	c.mode = mode
+	c.mu.Unlock()
+}
+
+// GetMode returns the mode the SDK will dispatch on for the next Run.
+// Empty string when SetMode has not been called; the native shell is
+// expected to call SetMode at app launch (reading from App Group
+// UserDefaults) and on every mode switch.
+func (c *Client) GetMode() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mode
+}
+
+// GetStatusJSON returns the v0.2 status snapshot as a JSON object.
+// Shape mirrors the desktop daemon's internal/ipc.StatusInfo for
+// behaviour parity (docs/parity-audit-desktop-vs-mobile.md §1):
+//
+//	{
+//	  "state":         "connected",
+//	  "mode":          "combined",
+//	  "interface_name": "utun-goat",
+//	  "bundle_imported": true,
+//	  "inner_mesh":    null      // populated by iteration-3 wiring
+//	}
+//
+// Mode + inner_mesh are the v0.2 additions; existing fields keep
+// their v0.1.x semantics. The Swift StatusSnapshot parser tolerates
+// missing optional fields so v0.1.x bundles + builds without the
+// inner-mesh subsystem render correctly.
+func (c *Client) GetStatusJSON() string {
+	state, _ := c.stateAtomic.Load().(string)
+	if state == "" {
+		state = StateDisconnected
+	}
+	c.mu.Lock()
+	mode := c.mode
+	c.mu.Unlock()
+	haveBundle := false
+	if c.cfgDir != "" {
+		if _, err := os.Stat(c.cfgDir + "/bundle.cbor"); err == nil {
+			haveBundle = true
+		}
+	}
+	return fmt.Sprintf(`{"state":%q,"mode":%q,"bundle_imported":%t,"inner_mesh":null}`, state, mode, haveBundle)
 }
 
 // SetCustomLogger lets Swift attach an os_log-backed logger after NewClient.
