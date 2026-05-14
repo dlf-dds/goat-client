@@ -9,6 +9,14 @@
 // unit on Linux, launchd LaunchDaemon on macOS, Windows Service on
 // Windows) — packaging lands in Track F. Mobile deployments link the
 // internal/* packages directly via gomobile (Tracks C + D).
+//
+// v0.2 (Block 76P): goat-clientd has no Fyne dependency and can be
+// shipped in a goat-client-headless package alongside a systemd unit
+// only — no GUI on the box. The --headless flag is a no-op today (the
+// daemon never had a GUI), kept as an explicit marker for ops scripts
+// and the systemd-unit template. The --import-bundle flag adds a
+// one-shot mode: validate the bundle against the trust roots, persist
+// it, restart the active subsystems per the active mode, and exit.
 package main
 
 import (
@@ -19,11 +27,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
 	"github.com/dlf-dds/goat-client/internal/daemon"
+	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
 )
 
@@ -33,7 +43,11 @@ func main() {
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "IPC endpoint (Unix socket path or Windows named-pipe name)")
 	configPath := flag.String("config", mode.DefaultConfigPath(), "path to goat-client config.toml (v0.2 mode selector)")
 	modeFlag := flag.String("mode", "", "v0.2 active mode override (wg-cp0-only|netbird-only|combined); empty = use --config file")
+	headlessFlag := flag.Bool("headless", false, "explicit marker for headless deployments (no-op — goat-clientd never imports a GUI)")
+	importBundleFlag := flag.String("import-bundle", "", "one-shot: validate + persist the bundle at this path, then exit 0 (no IPC server)")
 	flag.Parse()
+
+	_ = headlessFlag // accepted for explicit operator-facing clarity
 
 	log.SetFlags(0)
 	log.SetPrefix("goat-clientd: ")
@@ -68,6 +82,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// One-shot --import-bundle mode: validate + persist + bring up active
+	// subsystems, then exit. No IPC server runs. Useful for fresh-box
+	// bringup playbooks where the operator drops a bundle file in place
+	// and wants a single command to take it from "file on disk" to
+	// "tunnels up".
+	if *importBundleFlag != "" {
+		if err := runImportBundleOneShot(d, *importBundleFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "import-bundle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := d.LoadPersistedBundle(); err != nil {
 		log.Printf("load persisted bundle: %v", err)
 	}
@@ -96,6 +123,46 @@ func main() {
 	if err := d.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// runImportBundleOneShot reads a CBOR bundle file, hands it to the
+// daemon's ImportBundle handler (which validates + persists + configures
+// the tunnel), then brings the active mode's subsystems up + exits.
+// Exits 0 on success, 1 on any error. Designed for `goat-clientd
+// --import-bundle /path/to/bundle.cbor` invocations from install
+// scripts and ops runbooks.
+func runImportBundleOneShot(d *daemon.Daemon, path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return fmt.Errorf("read bundle file: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	reply, err := d.ImportBundle(ctx, ipc.ImportBundleRequest{BundleBytes: raw})
+	if err != nil {
+		return fmt.Errorf("import: %w", err)
+	}
+	log.Printf("imported: device=%s site=%s expires=%s endpoints=%d",
+		reply.DeviceID, reply.Site,
+		reply.ExpiresAt.UTC().Format(time.RFC3339), reply.EndpointsCount)
+	// Bring up active-mode subsystems so the operator can verify with one
+	// invocation. Errors here are non-fatal for the one-shot — the
+	// bundle is already persisted and the next start will retry.
+	if err := d.Connect(ctx); err != nil {
+		log.Printf("post-import connect: %v (bundle is persisted; retry via daemon start)", err)
+	} else {
+		log.Print("active mode subsystems up")
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := d.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+	return nil
 }
 
 // loadTrustRoots reads the configured PEM file. Missing file is fatal:
