@@ -147,6 +147,44 @@ func (c *Client) ImportBundle(bundleBytes []byte) error {
 	return nil
 }
 
+// BundleCapabilities returns a JSON-encoded snapshot of which v0.2
+// operating modes the persisted bundle can drive. Kotlin parses this
+// and uses it to gate the mode selector (single-capability bundle locks
+// the UI to one mode; both-capabilities surfaces the three-mode picker).
+//
+//	{ "wg_cp0": bool, "inner_mesh": bool, "has_mobile_cert": bool }
+//
+// Returns the all-false JSON when no bundle is imported yet. Does NOT
+// re-verify the bundle signature: ImportBundle already verified at write
+// time, and field-shape inspection here does not need crypto.
+func (c *Client) BundleCapabilities() string {
+	c.mu.RLock()
+	files := c.files
+	c.mu.RUnlock()
+	if files == nil {
+		return capsJSON(false, false, false)
+	}
+	cfgPath := files.ConfigurationFilePath()
+	if cfgPath == "" {
+		return capsJSON(false, false, false)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return capsJSON(false, false, false)
+	}
+	parsed, err := bundle.Unmarshal(raw)
+	if err != nil {
+		return capsJSON(false, false, false)
+	}
+	return capsJSON(parsed.HasWgCp0(), parsed.HasInnerMesh(), parsed.HasMobileCert())
+}
+
+// capsJSON renders the BundleCapabilities JSON shape. Hand-rolled
+// rather than json.Marshal because the field set is tiny.
+func capsJSON(wgCp0, innerMesh, hasMobileCert bool) string {
+	return fmt.Sprintf(`{"wg_cp0":%t,"inner_mesh":%t,"has_mobile_cert":%t}`, wgCp0, innerMesh, hasMobileCert)
+}
+
 // Configure attaches PlatformFiles without starting the engine. Useful
 // when the Kotlin shell wants to support an Import-without-Connect UX
 // (user adds a bundle, leaves the app, returns later to start the

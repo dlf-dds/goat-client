@@ -188,17 +188,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Compute what the imported bundle can drive. Until 76N exposes the
-     * `inner_mesh_setup` + `mobile_cert` CBOR fields through the gomobile
-     * SDK, an imported v0.1.x bundle reports wg-cp0 only — the correct
-     * v0.2 baseline.
+     * Compute what the imported bundle can drive. The Go SDK answers via
+     * `BundleCapabilities()` against the persisted bundle parse —
+     * authoritative source. Falls back to EMPTY when no bundle has been
+     * imported yet (state == "unconfigured").
      */
     private fun currentBundleCapabilities(): BundleCapabilities {
         val haveBundle = statusFlow.value.state != "unconfigured"
-        return if (haveBundle)
-            BundleCapabilities(supportsWgCp0 = true, supportsInnerMesh = false)
-        else
-            BundleCapabilities.EMPTY
+        return if (haveBundle) BundleCapabilities.read(applicationContext) else BundleCapabilities.EMPTY
     }
 
     private fun renderStatus(snap: StatusSnapshot) {

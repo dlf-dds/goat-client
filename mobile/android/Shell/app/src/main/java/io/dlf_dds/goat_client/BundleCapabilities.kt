@@ -2,21 +2,18 @@
 // Copyright (c) 2026 dlf-dds contributors.
 package io.dlf_dds.goat_client
 
+import android.content.Context
+import org.json.JSONObject
+
 /**
- * Mirror of the iOS shell's BundleCapabilities — what modes can the
- * currently-imported bundle drive? The Go SDK owns the authoritative
- * bundle parse via internal/bundle/ (gomobile bridge); Kotlin only
- * reflects the boolean answer.
- *
- * Until Worker A's 76N bundle-format extension lands (`inner_mesh_setup`
- * + `mobile_cert` CBOR fields), v0.1.x bundles always report
- * [supportsInnerMesh] = false. The SDK method that surfaces these flags
- * is wired so that the moment 76N adds the fields, this surface picks
- * them up with no Kotlin-side change.
+ * Mirror of the iOS shell's BundleCapabilities. The Go SDK owns the
+ * authoritative bundle parse via internal/bundle/ (gomobile bridge);
+ * Kotlin only reflects the boolean answer.
  */
 data class BundleCapabilities(
     val supportsWgCp0: Boolean,
     val supportsInnerMesh: Boolean,
+    val hasMobileCert: Boolean,
 ) {
     /** Modes the user may pick, in canonical UI order. Empty when no bundle. */
     val availableModes: List<OperatingMode>
@@ -31,6 +28,30 @@ data class BundleCapabilities(
         get() = availableModes.size > 1
 
     companion object {
-        val EMPTY = BundleCapabilities(supportsWgCp0 = false, supportsInnerMesh = false)
+        val EMPTY = BundleCapabilities(
+            supportsWgCp0 = false,
+            supportsInnerMesh = false,
+            hasMobileCert = false,
+        )
+
+        /**
+         * Read capabilities from the persisted bundle via the gomobile
+         * SDK. The Go side parses with internal/bundle.Unmarshal and
+         * answers HasWgCp0() / HasInnerMesh() / HasMobileCert(). Cheap
+         * (no crypto re-verify; the bundle was verified at import time).
+         * Returns EMPTY when no bundle is imported or parse fails.
+         */
+        fun read(ctx: Context): BundleCapabilities =
+            parse(GoatClient.get(ctx.applicationContext).bundleCapabilities()) ?: EMPTY
+
+        /** Parse the SDK JSON shape. */
+        fun parse(json: String): BundleCapabilities? = try {
+            val o = JSONObject(json)
+            BundleCapabilities(
+                supportsWgCp0 = o.optBoolean("wg_cp0", false),
+                supportsInnerMesh = o.optBoolean("inner_mesh", false),
+                hasMobileCert = o.optBoolean("has_mobile_cert", false),
+            )
+        } catch (_: Throwable) { null }
     }
 }

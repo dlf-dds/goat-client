@@ -141,6 +141,39 @@ func (c *Client) ImportBundle(bundleBytes []byte) error {
 	return nil
 }
 
+// BundleCapabilities returns a JSON-encoded snapshot of which v0.2
+// operating modes the persisted bundle can drive. Swift parses this into
+// the BundleCapabilities struct and uses it to gate the mode selector
+// (single-capability bundle locks the UI to one mode; both-capabilities
+// bundle surfaces the three-mode picker).
+//
+//	{ "wg_cp0": bool, "inner_mesh": bool, "has_mobile_cert": bool }
+//
+// Returns the all-false JSON when no bundle is imported yet. Does NOT
+// re-verify the bundle signature: ImportBundle already verified at write
+// time, and field-shape inspection here does not need crypto. If the
+// bundle on disk is corrupt, returns all-false defensively.
+func (c *Client) BundleCapabilities() string {
+	if c.cfgDir == "" {
+		return capsJSON(false, false, false)
+	}
+	raw, err := os.ReadFile(c.cfgDir + "/bundle.cbor")
+	if err != nil {
+		return capsJSON(false, false, false)
+	}
+	parsed, err := bundle.Unmarshal(raw)
+	if err != nil {
+		return capsJSON(false, false, false)
+	}
+	return capsJSON(parsed.HasWgCp0(), parsed.HasInnerMesh(), parsed.HasMobileCert())
+}
+
+// capsJSON renders the BundleCapabilities JSON shape. Hand-rolled
+// rather than json.Marshal because the field set is tiny.
+func capsJSON(wgCp0, innerMesh, hasMobileCert bool) string {
+	return fmt.Sprintf(`{"wg_cp0":%t,"inner_mesh":%t,"has_mobile_cert":%t}`, wgCp0, innerMesh, hasMobileCert)
+}
+
 // Run starts the tunnel goroutine and blocks until Stop is called or the
 // underlying tunnel exits. Called from the Swift NEPacketTunnelProvider's
 // startTunnel(options:completionHandler:) — typically on a background

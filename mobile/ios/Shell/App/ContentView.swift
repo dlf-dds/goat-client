@@ -9,16 +9,13 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var importError: String?
 
-    // Bundle-capability detection lives in the gomobile bridge once Worker A
-    // exposes it (76N adds `inner_mesh_setup` + `mobile_cert` to the CBOR
-    // schema; the SDK will surface them as a JSON blob the UI parses). Until
-    // then, an imported v0.1.x bundle reports wg-cp0 only — which is the
-    // correct default behaviour for the v0.2 baseline and lets us land the
-    // mode-selector UI now without waiting on the foundation track.
+    // Bundle-capability detection reads through the gomobile SDK so the
+    // Go-side `internal/bundle` library is the single source of truth (no
+    // Swift CBOR re-impl, per Block 76Q charter). The SDK answers
+    // HasWgCp0 / HasInnerMesh / HasMobileCert against the persisted bundle.
     private var bundleCaps: BundleCapabilities {
-        BundleStore.hasBundle
-            ? BundleCapabilities(supportsWgCp0: true, supportsInnerMesh: false)
-            : .empty
+        guard BundleStore.hasBundle, let cfgDir = BundleStore.cfgDir else { return .empty }
+        return BundleCapabilities.read(cfgDir: cfgDir)
     }
 
     var body: some View {
@@ -182,7 +179,7 @@ struct ContentView: View {
                 // Clamp the mode to what this bundle supports — a stale
                 // `combined` selection from a previous netbird-capable
                 // bundle should not survive importing a wg-cp0-only one.
-                let caps = BundleCapabilities(supportsWgCp0: true, supportsInnerMesh: false)
+                let caps = BundleCapabilities.read(cfgDir: BundleStore.cfgDir ?? "")
                 if !caps.availableModes.contains(tunnel.mode), let fallback = caps.availableModes.first {
                     Task { await tunnel.selectMode(fallback) }
                 }
