@@ -57,6 +57,51 @@
 >
 > ---
 >
+> ## v0.2 build-out (added 2026-05-13)
+>
+> Per ADR 0840 amendment 2026-05-13 (three-mode triad: wg-cp0-only /
+> netbird-only / combined) the v0.2 work fans out across four worker
+> tracks; see [implementation plan rows 76N–76Q](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/project/implementation-plan.md)
+> for the authoritative scope. Cross-track interface notes:
+>
+> - **Track v0.2-foundation (Block 76N)** — Worker A. Un-strip netbird
+>   inner-mesh from the goat-client fork; define the `InnerMesh`
+>   interface alongside `Tunnel`; extend IPC with `getMode` / `setMode`
+>   / `getInnerMeshStatus` / `setInnerMeshProfile` /
+>   `getInnerMeshDiagnostics`; extend the CBOR bundle with
+>   `inner_mesh_setup` + `mobile_cert` optional fields. **Gates 76O /
+>   76P / 76Q on interface freeze only, not full implementation.**
+>   Authoritative interface contract will live at
+>   `internal/innermesh/INTERFACE.md`.
+> - **Track v0.2-desktop-headless (Block 76O + 76P)** — Worker B.
+>   Worktree: `.claude/worktrees/v0.2-desktop-headless-76OP/`. Fyne
+>   GUI mode selector + dual-status surface + headless mode flag.
+> - **Track v0.2-mobile (Block 76Q)** — Worker C. Worktree:
+>   `.claude/worktrees/v0.2-mobile-76Q/`. iOS `NEPacketTunnelProvider`
+>   + Android `VpnService` running any one of the three modes inside
+>   the single system-VPN slot per platform.
+>
+> ### v0.2 mobile blockers
+>
+> - `internal/innermesh/INTERFACE.md` not yet published — 76Q can land
+>   the UI shells + mode-aware tunnel skeletons (which it has), but
+>   neither `netbird-only` nor the inner half of `combined` can drive
+>   real traffic until 76N's `InnerMesh.Configure` / `Up` / `Down` /
+>   `Status` / `Logs` are wired through the gomobile facade. The
+>   `wg-cp0-only` mode remains a clean regression of v0.1.x and is
+>   the verdict-gate regression bar.
+> - Bundle-capability detection on mobile is parked on a v0.1.x
+>   fallback (wg-cp0 only) until 76N adds the `inner_mesh_setup` +
+>   `mobile_cert` CBOR fields. The Swift + Kotlin UI shells are
+>   pre-wired to surface all three modes the moment those fields
+>   land — the SDK fetch shape is the only seam to update.
+> - `netbird-only` mode's end-to-end real-device test depends on the
+>   Block 80 crutch tier reaching live. Bench-env suffices for the
+>   sub-task verdict gate; production-live preferred for the v0.2
+>   ship gate.
+>
+> ---
+>
 > **Below this line: build-out history through v0.1.0. Read for
 > context, do not extend without coordinating with captain.**
 >
