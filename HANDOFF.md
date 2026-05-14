@@ -129,6 +129,20 @@
 >   because `embed.Client` is the upstream-maintained re-export.
 >   Mapping table + upstream-doc link in
 >   [`internal/innermesh/UNSTRIP.md`](internal/innermesh/UNSTRIP.md).
+> - 2026-05-14 13:30 76N M2a — fake mgmt-server skeleton green:
+>   branch `track/v0.2-netbird-fakemgmt-76N-M2` (HEAD `ed31c55`),
+>   not yet a PR. Server type implements
+>   `proto.ManagementServiceServer`; `GetServerKey` + `IsHealthy`
+>   real, `Login` + `Sync` return Unimplemented. **M2b pending in
+>   a fresh session** — implements Login (encrypted) + Sync
+>   (streaming) using `github.com/netbirdio/netbird/encryption`'s
+>   public EncryptMessage / DecryptMessage helpers. Detailed
+>   technical handoff at
+>   [`internal/innermesh/fakemgmt/M2B_HANDOFF.md`](internal/innermesh/fakemgmt/M2B_HANDOFF.md)
+>   (resume checklist + open pivot question + acceptance criteria).
+>   M3 (Stats/Logs during real session) + M4 (three headless
+>   smokes) + M5 (innermesh.New flip) + M6 (verdict-gate) depend
+>   on M2b.
 >
 > ---
 >
