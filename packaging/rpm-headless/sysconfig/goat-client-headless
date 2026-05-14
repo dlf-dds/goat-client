@@ -1,0 +1,8 @@
+# /etc/sysconfig/goat-client-headless — env file for the headless unit.
+# Marked %config(noreplace), operator edits survive upgrades.
+
+GOAT_CLIENTD_FLAGS=
+
+# v0.2 mode selector. Read by the rpm %post script.
+# Valid values: wg-cp0-only | netbird-only | combined
+GOAT_MODE=

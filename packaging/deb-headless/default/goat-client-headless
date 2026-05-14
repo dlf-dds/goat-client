@@ -1,0 +1,17 @@
+# /etc/default/goat-client-headless — env file for the goat-clientd-
+# headless systemd unit. Marked `conffile` so operator edits survive
+# upgrades.
+
+# Extra flags appended to the daemon command line. Empty by default.
+GOAT_CLIENTD_FLAGS=
+
+# v0.2 mode selector. Read by the deb postinstall when (re)writing
+# /etc/goat-client/config.toml on install. Empty value means
+# "use the daemon's default" (combined). Operators can edit and reinstall
+# to re-apply, or use `goat-client setmode <mode>` at runtime if the
+# `goat-client` CLI is available on PATH (it is not, in this package).
+# Alternative: `curl --unix-socket /run/goat-client/ipc.sock ...` via
+# the JSON-RPC API.
+#
+# Valid values: wg-cp0-only | netbird-only | combined
+GOAT_MODE=

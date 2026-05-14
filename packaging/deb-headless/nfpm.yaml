@@ -1,0 +1,74 @@
+---
+# nfpm config for goat-client-headless — a daemon-only .deb that ships
+# no GUI components. Pair package to packaging/deb/nfpm.yaml: same
+# daemon binary + systemd unit, different unit name + no Fyne GUI on
+# the box.
+#
+# Driven by:
+#   VERSION=... GOARCH=... packaging/build-linux-pkg.sh deb-headless
+#
+# Used for Orin sites, headless servers, and any deployment where the
+# operator manages the box over SSH and has no use for a tray icon.
+
+name: goat-client-headless
+arch: ${GOARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: dlf-dds <ops@dlf-dds.invalid>
+description: |
+  goat-client-headless — daemon-only build of the goat-client.
+  Consumes an offline-CA-signed CBOR enrollment bundle and brings up
+  the wg-cp0 outer tunnel and/or netbird inner mesh (per v0.2 mode).
+  Ships a systemd unit only; no GUI, no tray, no Fyne dependency.
+  Use on Orin sites, headless servers, and locked-down boxes.
+vendor: dlf-dds
+homepage: https://github.com/dlf-dds/goat-client
+license: BSD-3-Clause
+
+# `conflicts: goat-client` — the headless and full installs share the
+# /usr/bin/goat-clientd path and the /etc/goat-client/config.toml file
+# but ship different systemd units; running both leaves orphaned units.
+# We don't enforce conflicts here so operators can transition by
+# installing one, then the other, but the README documents that they
+# should remove the previous package first.
+
+depends:
+  - libc6
+recommends:
+  - wireguard-tools
+
+contents:
+  # Daemon binary built with `-tags headless` so the build tag asserts
+  # the binary has no transitive Fyne import. Track E's CI builds the
+  # headless variant into dist/linux_${GOARCH}-headless/.
+  - src: ./dist/linux_${GOARCH}-headless/goat-clientd
+    dst: /usr/bin/goat-clientd
+    file_info:
+      mode: 0755
+
+  # systemd unit. Distinct from goat-clientd.service (the full-install
+  # one) so an operator can have both packages aware of each other
+  # cleanly during a transition; the README recommends removing one
+  # before installing the other.
+  - src: ./packaging/deb-headless/systemd/goat-clientd-headless.service
+    dst: /lib/systemd/system/goat-clientd-headless.service
+    file_info:
+      mode: 0644
+
+  - src: ./packaging/deb-headless/default/goat-client-headless
+    dst: /etc/default/goat-client-headless
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  preinstall: ./packaging/deb-headless/scripts/preinstall.sh
+  postinstall: ./packaging/deb-headless/scripts/postinstall.sh
+  preremove: ./packaging/deb-headless/scripts/preremove.sh
+  postremove: ./packaging/deb-headless/scripts/postremove.sh
+
+deb:
+  fields:
+    Bugs: https://github.com/dlf-dds/goat-client/issues

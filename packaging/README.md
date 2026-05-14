@@ -2,12 +2,14 @@
 
 Per-platform packagers for the goat-client desktop binaries:
 
-| Dir       | Format    | Daemon launcher          | GUI launcher                     | Build tool         |
-|-----------|-----------|--------------------------|----------------------------------|--------------------|
-| `deb/`    | `.deb`    | systemd unit             | XDG `.desktop` + icon            | `nfpm`             |
-| `rpm/`    | `.rpm`    | systemd unit             | XDG `.desktop` + icon            | `nfpm`             |
-| `dmg/`    | `.dmg` + nested `.pkg` | launchd `LaunchDaemon` | `.app` bundle in `/Applications` | `pkgbuild`+`hdiutil` |
-| `msi/`    | `.msi` (WiX), `.exe` (NSIS fallback) | Windows Service | Start Menu + Desktop shortcuts | `wix` (v4) or `makensis` |
+| Dir              | Format    | Daemon launcher                                              | GUI launcher                     | Build tool         |
+|------------------|-----------|--------------------------------------------------------------|----------------------------------|--------------------|
+| `deb/`           | `.deb`    | systemd `goat-clientd.service`                               | XDG `.desktop` + icon            | `nfpm`             |
+| `rpm/`           | `.rpm`    | systemd `goat-clientd.service`                               | XDG `.desktop` + icon            | `nfpm`             |
+| `dmg/`           | `.dmg` + nested `.pkg`                              | launchd `LaunchDaemon`            | `.app` bundle in `/Applications` | `pkgbuild`+`hdiutil` |
+| `msi/`           | `.msi` (WiX), `.exe` (NSIS fallback) | Windows Service                                            | Start Menu + Desktop shortcuts | `wix` (v4) or `makensis` |
+| `deb-headless/`  | `.deb`    | systemd `goat-clientd-headless.service` (v0.2 Block 76P)     | — (daemon only)                  | `nfpm`             |
+| `rpm-headless/`  | `.rpm`    | systemd `goat-clientd-headless.service` (v0.2 Block 76P)     | — (daemon only)                  | `nfpm`             |
 
 All four assume Track A's `cmd/goat-clientd` (system daemon) and Track B's
 `cmd/goat-client` (Fyne GUI) are built and dropped under `dist/<goos>_<goarch>/`
@@ -58,9 +60,17 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
     go build -trimpath -buildvcs=false -o dist/linux_amd64/goat-client  ./cmd/goat-client
 
+# For the headless package, build the daemon a second time with the
+# headless build tag and drop into dist/linux_${GOARCH}-headless/.
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+    go build -tags headless -trimpath -buildvcs=false \
+    -o dist/linux_amd64-headless/goat-clientd ./cmd/goat-clientd
+
 # Then package.
 GOARCH=amd64 VERSION=0.0.1 packaging/build-linux-pkg.sh deb
 GOARCH=amd64 VERSION=0.0.1 packaging/build-linux-pkg.sh rpm
+GOARCH=amd64 VERSION=0.0.1 packaging/build-linux-pkg.sh deb-headless
+GOARCH=amd64 VERSION=0.0.1 packaging/build-linux-pkg.sh rpm-headless
 ```
 
 The wrapper envsubst's `${GOARCH}` / `${VERSION}` into the nfpm YAML before

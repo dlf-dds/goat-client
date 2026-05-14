@@ -1,0 +1,60 @@
+[Unit]
+Description=goat-client tunnel daemon (headless)
+Documentation=https://github.com/dlf-dds/goat-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-/etc/default/goat-client-headless
+ExecStart=/usr/bin/goat-clientd \
+    --headless \
+    --bundle-dir=/var/lib/goat-client \
+    --ipc-socket=/run/goat-client/ipc.sock \
+    --log-file=/var/log/goat-client/goat-clientd.log \
+    --config=/etc/goat-client/config.toml \
+    $GOAT_CLIENTD_FLAGS
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+User=goat-client
+Group=goat-client
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+ConfigurationDirectory=goat-client
+ConfigurationDirectoryMode=0750
+StateDirectory=goat-client
+StateDirectoryMode=0750
+CacheDirectory=goat-client
+CacheDirectoryMode=0750
+LogsDirectory=goat-client
+LogsDirectoryMode=0750
+RuntimeDirectory=goat-client
+RuntimeDirectoryMode=0755
+
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateMounts=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,55 @@
+---
+# nfpm config for goat-client-headless (Fedora/RHEL .rpm variant).
+# Pair package to packaging/rpm/nfpm.yaml: daemon-only, no GUI.
+
+name: goat-client-headless
+arch: ${GOARCH}
+platform: linux
+version: ${VERSION}
+section: Applications/Internet
+priority: optional
+maintainer: dlf-dds <ops@dlf-dds.invalid>
+description: |
+  goat-client-headless — daemon-only build of the goat-client.
+  Consumes an offline-CA-signed CBOR enrollment bundle and brings up
+  the wg-cp0 outer tunnel and/or netbird inner mesh (per v0.2 mode).
+  Ships a systemd unit only; no GUI, no tray, no Fyne dependency.
+  Use on Orin sites, headless servers, and locked-down boxes.
+vendor: dlf-dds
+homepage: https://github.com/dlf-dds/goat-client
+license: BSD-3-Clause
+
+depends:
+  - glibc
+  - shadow-utils
+recommends:
+  - wireguard-tools
+
+contents:
+  - src: ./dist/linux_${GOARCH}-headless/goat-clientd
+    dst: /usr/bin/goat-clientd
+    file_info:
+      mode: 0755
+
+  - src: ./packaging/rpm-headless/systemd/goat-clientd-headless.service
+    dst: /usr/lib/systemd/system/goat-clientd-headless.service
+    file_info:
+      mode: 0644
+
+  - src: ./packaging/rpm-headless/sysconfig/goat-client-headless
+    dst: /etc/sysconfig/goat-client-headless
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+scripts:
+  preinstall: ./packaging/rpm-headless/scripts/preinstall.sh
+  postinstall: ./packaging/rpm-headless/scripts/postinstall.sh
+  preremove: ./packaging/rpm-headless/scripts/preremove.sh
+  postremove: ./packaging/rpm-headless/scripts/postremove.sh
+
+rpm:
+  group: Applications/Internet
+  summary: WireGuard client for the goat overlay (headless variant)
+  signature:
+    key_file: ${GPG_RPM_KEY_FILE}
