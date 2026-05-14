@@ -26,10 +26,10 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     ENABLE_BITCODE: NO
-    # Allow building without a Developer Program team (Simulator only). For
-    # device builds, the operator sets DEVELOPMENT_TEAM in a local override
-    # (project-overrides.yml or Xcode UI) — the Apple Developer Program is
-    # gating procurement, not code.
+    # DEVELOPMENT_TEAM is pulled from the APPLE_DEVELOPMENT_TEAM env var at
+    # xcodegen-time (direnv loads it from .envrc.local). Empty default keeps
+    # Simulator-only builds working without an Apple Developer Program team.
+    DEVELOPMENT_TEAM: "${APPLE_DEVELOPMENT_TEAM}"
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGNING_ALLOWED: "$(CODE_SIGNING_ALLOWED_FOR_BUILD_$(EFFECTIVE_PLATFORM_NAME:lower))"
