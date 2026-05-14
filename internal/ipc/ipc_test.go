@@ -28,18 +28,26 @@ func tempSocketPath(t *testing.T) string {
 // fakeHandler is a Handler stub that records invocations and lets tests
 // inject reply / error values.
 type fakeHandler struct {
-	mu          sync.Mutex
-	importCalls int
-	connectCalls int
+	mu              sync.Mutex
+	importCalls     int
+	connectCalls    int
 	disconnectCalls int
-	getModeCalls int
-	setModeCalls int
-	statusReply StatusReply
-	importReply ImportBundleReply
-	importErr   error
-	modeReply   GetModeReply
-	setModeRecv SetModeRequest
-	setModeReply SetModeReply
+	getModeCalls    int
+	setModeCalls    int
+	statusReply     StatusReply
+	importReply     ImportBundleReply
+	importErr       error
+	modeReply       GetModeReply
+	setModeRecv     SetModeRequest
+	setModeReply    SetModeReply
+
+	// v0.2 inner-mesh-direct fields.
+	innerStatusReply      InnerMeshSnapshot
+	setInnerProfileCalls  int
+	setInnerProfileRecv   SetInnerMeshProfileRequest
+	enableInnerCalls      int
+	disableInnerCalls     int
+	innerDiagnosticsReply InnerMeshDiagnosticsReply
 }
 
 func (f *fakeHandler) ImportBundle(ctx context.Context, req ImportBundleRequest) (ImportBundleReply, error) {
@@ -84,6 +92,40 @@ func (f *fakeHandler) SetMode(ctx context.Context, req SetModeRequest) (SetModeR
 	f.setModeCalls++
 	f.setModeRecv = req
 	return f.setModeReply, nil
+}
+
+func (f *fakeHandler) GetInnerMeshStatus(ctx context.Context) (InnerMeshSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.innerStatusReply, nil
+}
+
+func (f *fakeHandler) SetInnerMeshProfile(ctx context.Context, req SetInnerMeshProfileRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setInnerProfileCalls++
+	f.setInnerProfileRecv = req
+	return nil
+}
+
+func (f *fakeHandler) EnableInnerMesh(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enableInnerCalls++
+	return nil
+}
+
+func (f *fakeHandler) DisableInnerMesh(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disableInnerCalls++
+	return nil
+}
+
+func (f *fakeHandler) GetInnerMeshDiagnostics(ctx context.Context) (InnerMeshDiagnosticsReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.innerDiagnosticsReply, nil
 }
 
 func startServer(t *testing.T, h Handler) (string, *Server) {
@@ -189,6 +231,121 @@ func TestGetSetModeRoundTrip(t *testing.T) {
 	}
 	if h.setModeRecv.Mode != "combined" {
 		t.Errorf("handler received mode=%q want combined", h.setModeRecv.Mode)
+	}
+}
+
+// TestV0_2InnerMeshMethods drives the five v0.2 inner-mesh IPC
+// methods (getInnerMeshStatus / setInnerMeshProfile /
+// enableInnerMesh / disableInnerMesh / getInnerMeshDiagnostics)
+// end-to-end through the dispatcher. Validates each method reaches
+// the Handler, the wire types round-trip cleanly (in particular
+// SetInnerMeshProfileRequest's []byte fields base64 through JSON),
+// and the mutating methods are flagged in isMutating.
+func TestV0_2InnerMeshMethods(t *testing.T) {
+	h := &fakeHandler{
+		innerStatusReply: InnerMeshSnapshot{
+			State: WireStateConnected, PeerCount: 3, BytesIn: 4096, BytesOut: 1024,
+		},
+		innerDiagnosticsReply: InnerMeshDiagnosticsReply{
+			LogTail: []string{"alpha", "beta"},
+		},
+	}
+	socket, srv := startServer(t, h)
+	defer srv.Close()
+	conn, _ := Dial(socket)
+	cli := newRPCClient(conn)
+	defer cli.Close()
+
+	// getInnerMeshStatus
+	var ims InnerMeshSnapshot
+	if err := cli.call(MethodGetInnerMeshStatus, EmptyRequest{}, &ims, 5*time.Second); err != nil {
+		t.Fatalf("getInnerMeshStatus: %v", err)
+	}
+	if ims.State != WireStateConnected || ims.PeerCount != 3 {
+		t.Errorf("getInnerMeshStatus reply mismatch: %+v", ims)
+	}
+
+	// setInnerMeshProfile — including base64-roundtrip on []byte fields
+	req := SetInnerMeshProfileRequest{
+		ManagementURL: "https://mgmt.example.internal:33073",
+		SetupKey:      "TEST-SETUP-KEY",
+		MobileCert:    []byte("pem-bytes-stub"),
+		PreSharedKey:  []byte("32-byte-psk-stub-fill-to-32-bytes"),
+	}
+	if err := cli.call(MethodSetInnerMeshProfile, req, nil, 5*time.Second); err != nil {
+		t.Fatalf("setInnerMeshProfile: %v", err)
+	}
+	if h.setInnerProfileCalls != 1 {
+		t.Errorf("setInnerMeshProfile calls: got %d want 1", h.setInnerProfileCalls)
+	}
+	if h.setInnerProfileRecv.ManagementURL != req.ManagementURL {
+		t.Errorf("ManagementURL round-trip: got %q want %q",
+			h.setInnerProfileRecv.ManagementURL, req.ManagementURL)
+	}
+	if string(h.setInnerProfileRecv.MobileCert) != "pem-bytes-stub" {
+		t.Errorf("MobileCert round-trip: got %q want pem-bytes-stub",
+			string(h.setInnerProfileRecv.MobileCert))
+	}
+
+	// enableInnerMesh / disableInnerMesh
+	if err := cli.call(MethodEnableInnerMesh, EmptyRequest{}, nil, 5*time.Second); err != nil {
+		t.Fatalf("enableInnerMesh: %v", err)
+	}
+	if err := cli.call(MethodDisableInnerMesh, EmptyRequest{}, nil, 5*time.Second); err != nil {
+		t.Fatalf("disableInnerMesh: %v", err)
+	}
+	if h.enableInnerCalls != 1 || h.disableInnerCalls != 1 {
+		t.Errorf("enable/disable counts: %d/%d", h.enableInnerCalls, h.disableInnerCalls)
+	}
+
+	// getInnerMeshDiagnostics
+	var idr InnerMeshDiagnosticsReply
+	if err := cli.call(MethodGetInnerMeshDiagnostics, EmptyRequest{}, &idr, 5*time.Second); err != nil {
+		t.Fatalf("getInnerMeshDiagnostics: %v", err)
+	}
+	if len(idr.LogTail) != 2 || idr.LogTail[0] != "alpha" {
+		t.Errorf("InnerMeshDiagnostics.LogTail: %v want [alpha beta]", idr.LogTail)
+	}
+}
+
+// TestV0_2InnerMeshMutatingMethodsRequireAuth confirms the three
+// mutating v0.2 inner-mesh methods (setInnerMeshProfile,
+// enableInnerMesh, disableInnerMesh) are flagged in isMutating() so
+// the uid-auth check gates them. Read-only methods
+// (getInnerMeshStatus, getInnerMeshDiagnostics) stay accessible.
+func TestV0_2InnerMeshMutatingMethodsRequireAuth(t *testing.T) {
+	h := &fakeHandler{}
+	socket := tempSocketPath(t)
+	ln, err := Listen(socket)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	srv := NewServer(h, 99999) // no local peer matches
+	go func() { _ = srv.Serve(context.Background(), ln) }()
+	defer srv.Close()
+	conn, _ := Dial(socket)
+	cli := newRPCClient(conn)
+	defer cli.Close()
+
+	// mutating methods → rejected
+	mutating := []struct {
+		method Method
+		params interface{}
+	}{
+		{MethodSetInnerMeshProfile, SetInnerMeshProfileRequest{ManagementURL: "https://x", SetupKey: "k"}},
+		{MethodEnableInnerMesh, EmptyRequest{}},
+		{MethodDisableInnerMesh, EmptyRequest{}},
+	}
+	for _, tc := range mutating {
+		if err := cli.call(tc.method, tc.params, nil, 5*time.Second); err == nil {
+			t.Errorf("%s: expected unauthorized error, got nil", tc.method)
+		}
+	}
+
+	// read-only methods → accepted
+	var ims InnerMeshSnapshot
+	if err := cli.call(MethodGetInnerMeshStatus, EmptyRequest{}, &ims, 5*time.Second); err != nil {
+		t.Errorf("getInnerMeshStatus under untrusted peer: %v want success", err)
 	}
 }
 

@@ -442,6 +442,114 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 	return ipc.SetModeReply{PreviousMode: prev.String(), Mode: newMode.String()}, nil
 }
 
+// GetInnerMeshStatus returns the inner-mesh snapshot directly (a
+// narrower payload than GetStatus's embedded InnerMesh field). In
+// modes that don't include the inner mesh, returns a zero snapshot
+// with State=disconnected so the GUI can render "off" without an
+// error round-trip.
+func (d *Daemon) GetInnerMeshStatus(_ context.Context) (ipc.InnerMeshSnapshot, error) {
+	d.mu.RLock()
+	mesh := d.mesh
+	m := d.currentMode
+	d.mu.RUnlock()
+	if mesh == nil || !m.IncludesNetbird() {
+		return ipc.InnerMeshSnapshot{State: ipc.WireStateDisconnected}, nil
+	}
+	snap := ipc.InnerMeshSnapshot{State: mapMeshState(mesh.State())}
+	if st, err := mesh.Stats(); err == nil {
+		snap.PeerCount = st.PeerCount
+		snap.BytesIn = st.BytesIn
+		snap.BytesOut = st.BytesOut
+		snap.LastHandshake = st.LastHandshake
+	}
+	return snap, nil
+}
+
+// SetInnerMeshProfile applies an inner-mesh Config to the active
+// mesh. Requires the daemon's mode to include the inner mesh — the
+// GUI surfaces the "setMode first" condition from the returned error.
+func (d *Daemon) SetInnerMeshProfile(_ context.Context, req ipc.SetInnerMeshProfileRequest) error {
+	d.mu.RLock()
+	mesh := d.mesh
+	m := d.currentMode
+	d.mu.RUnlock()
+	if !m.IncludesNetbird() {
+		return fmt.Errorf("setInnerMeshProfile: mode %q does not include inner mesh (call setMode first)", m)
+	}
+	if mesh == nil {
+		return errors.New("setInnerMeshProfile: inner-mesh manager not constructed")
+	}
+	cfg := innermesh.Config{
+		ManagementURL:    req.ManagementURL,
+		SetupKey:         req.SetupKey,
+		AdminAccessToken: req.AdminAccessToken,
+	}
+	if len(req.MobileCert) > 0 {
+		cfg.MobileCert = append([]byte(nil), req.MobileCert...)
+	}
+	if len(req.PreSharedKey) > 0 {
+		cfg.PreSharedKey = append([]byte(nil), req.PreSharedKey...)
+	}
+	return mesh.Configure(cfg)
+}
+
+// EnableInnerMesh brings the inner mesh up (Connect). Mode-gated:
+// only valid when the active mode includes the inner mesh. Doesn't
+// flip the mode — that's setMode's job. Use to retry after a failed
+// auto-bring-up at mode-switch time.
+func (d *Daemon) EnableInnerMesh(ctx context.Context) error {
+	d.mu.RLock()
+	mesh := d.mesh
+	m := d.currentMode
+	d.mu.RUnlock()
+	if !m.IncludesNetbird() {
+		return fmt.Errorf("enableInnerMesh: mode %q does not include inner mesh", m)
+	}
+	if mesh == nil {
+		return errors.New("enableInnerMesh: inner-mesh manager not constructed")
+	}
+	return mesh.Connect(ctx)
+}
+
+// DisableInnerMesh brings the inner mesh down (Disconnect). Idempotent
+// — safe to call when the mesh isn't up, or when the active mode
+// doesn't include the inner mesh.
+func (d *Daemon) DisableInnerMesh(ctx context.Context) error {
+	d.mu.RLock()
+	mesh := d.mesh
+	d.mu.RUnlock()
+	if mesh == nil {
+		return nil
+	}
+	return mesh.Disconnect(ctx)
+}
+
+// GetInnerMeshDiagnostics returns the inner-mesh's rolling log
+// buffer + (eventually) per-peer stats. Empty reply when the mesh
+// isn't constructed (mode doesn't include inner mesh).
+//
+// PeerStats is left empty for now — Fake reports a single synthetic
+// row from its aggregate Stats so the GUI's Diagnostics view has
+// something to render before the netbird-library impl lands.
+func (d *Daemon) GetInnerMeshDiagnostics(_ context.Context) (ipc.InnerMeshDiagnosticsReply, error) {
+	d.mu.RLock()
+	mesh := d.mesh
+	d.mu.RUnlock()
+	if mesh == nil {
+		return ipc.InnerMeshDiagnosticsReply{}, nil
+	}
+	reply := ipc.InnerMeshDiagnosticsReply{LogTail: mesh.Logs(0)}
+	if st, err := mesh.Stats(); err == nil && st.PeerCount > 0 {
+		reply.PeerStats = []ipc.InnerMeshPeerStats{{
+			PeerPubKey:    "aggregate (fake)",
+			BytesIn:       st.BytesIn,
+			BytesOut:      st.BytesOut,
+			LastHandshake: st.LastHandshake,
+		}}
+	}
+	return reply, nil
+}
+
 // mapMeshState translates inner-mesh state into the wire-level TunnelState.
 func mapMeshState(s innermesh.State) ipc.TunnelState {
 	switch s {
@@ -552,10 +660,22 @@ func (d *Daemon) Disconnect(ctx context.Context) error {
 // the inner-mesh bundle fields. Today the bundle does not carry setup
 // data; the Fake accepts any config and the real implementation will
 // wire this when the bundle schema extends.
+// meshConfigFromBundle derives an inner-mesh Config from a verified
+// EnrollmentBundle. When the bundle has no inner_mesh_setup field
+// (HasInnerMesh returns false) the returned Config is zero — the
+// caller treats this as "no inner-mesh setup data" and falls back
+// (e.g., refuses to bring the inner mesh up, or keeps the mesh at
+// rest in wg-cp0-only mode). Errors other than missing-setup
+// (programmer error: nil bundle) surface to the caller.
 func meshConfigFromBundle(b *bundle.EnrollmentBundle) innermesh.Config {
-	cfg := innermesh.Config{}
-	// When the v0.2 bundle extension lands, populate cfg from b.
-	_ = b
+	cfg, err := innermesh.FromBundle(b)
+	if err != nil {
+		// Missing inner_mesh_setup is the common case (v1 bundles +
+		// wg-cp0-only deployments); return zero Config silently.
+		// Nil bundle would be a programmer error — also return zero
+		// rather than panic, matching the pre-FromBundle behaviour.
+		return innermesh.Config{}
+	}
 	return cfg
 }
 

@@ -38,13 +38,23 @@ import (
 type Method string
 
 const (
-	MethodImportBundle    Method = "importBundle"
-	MethodGetStatus       Method = "getStatus"
-	MethodConnect         Method = "connect"
-	MethodDisconnect      Method = "disconnect"
-	MethodGetDiagnostics  Method = "getDiagnostics"
-	MethodGetMode         Method = "getMode"
-	MethodSetMode         Method = "setMode"
+	MethodImportBundle   Method = "importBundle"
+	MethodGetStatus      Method = "getStatus"
+	MethodConnect        Method = "connect"
+	MethodDisconnect     Method = "disconnect"
+	MethodGetDiagnostics Method = "getDiagnostics"
+	MethodGetMode        Method = "getMode"
+	MethodSetMode        Method = "setMode"
+
+	// v0.2 inner-mesh-direct methods per Block 76N deliverable #5.
+	// getStatus already embeds an inner-mesh snapshot; these methods
+	// expose narrower entry points the GUI uses without the full
+	// StatusReply payload (polling, dedicated panel refresh).
+	MethodGetInnerMeshStatus      Method = "getInnerMeshStatus"
+	MethodSetInnerMeshProfile     Method = "setInnerMeshProfile"
+	MethodEnableInnerMesh         Method = "enableInnerMesh"
+	MethodDisableInnerMesh        Method = "disableInnerMesh"
+	MethodGetInnerMeshDiagnostics Method = "getInnerMeshDiagnostics"
 )
 
 // ImportBundleRequest carries the raw CBOR bundle bytes from the GUI to the
@@ -136,6 +146,42 @@ type SetModeReply struct {
 	Mode string `json:"mode"`
 }
 
+// SetInnerMeshProfileRequest carries the inner-mesh Config fields the
+// daemon hands to Mesh.Configure. ManagementURL + SetupKey are
+// required; the optional fields default to empty / nil.
+//
+// Wire shape: []byte is base64-encoded by encoding/json by default
+// (mobileCert, preSharedKey) — that's the round-trip the GUI client
+// expects when extracting these fields from a parsed bundle.
+type SetInnerMeshProfileRequest struct {
+	ManagementURL    string `json:"managementURL"`
+	SetupKey         string `json:"setupKey"`
+	AdminAccessToken string `json:"adminAccessToken,omitempty"`
+	MobileCert       []byte `json:"mobileCert,omitempty"`
+	PreSharedKey     []byte `json:"preSharedKey,omitempty"`
+}
+
+// InnerMeshDiagnosticsReply carries the inner-mesh log tail + peer
+// stats. The log tail is a rolling buffer the daemon keeps for the
+// GUI's diagnostics pane; peer stats are per-peer counters
+// (populated by the netbird-library-backed impl once it lands — the
+// Fake reports the aggregate Stats here too).
+type InnerMeshDiagnosticsReply struct {
+	LogTail   []string             `json:"logTail"`
+	PeerStats []InnerMeshPeerStats `json:"peerStats,omitempty"`
+}
+
+// InnerMeshPeerStats is the per-peer counter shape the GUI's
+// expanded diagnostics view renders one row per. Fake reports a
+// single synthetic entry covering its aggregate Stats; the
+// netbird-library impl populates one per real peer.
+type InnerMeshPeerStats struct {
+	PeerPubKey    string    `json:"peerPubKey"`
+	BytesIn       uint64    `json:"bytesIn"`
+	BytesOut      uint64    `json:"bytesOut"`
+	LastHandshake time.Time `json:"lastHandshake,omitempty"`
+}
+
 // EmptyRequest / EmptyReply are placeholders for methods that take or
 // return no fields. Kept named (rather than reusing `struct{}`) so the
 // JSON-RPC error shape stays stable when fields are added.
@@ -164,6 +210,13 @@ type Handler interface {
 	GetDiagnostics(ctx context.Context) (DiagnosticsReply, error)
 	GetMode(ctx context.Context) (GetModeReply, error)
 	SetMode(ctx context.Context, req SetModeRequest) (SetModeReply, error)
+
+	// v0.2 inner-mesh-direct methods.
+	GetInnerMeshStatus(ctx context.Context) (InnerMeshSnapshot, error)
+	SetInnerMeshProfile(ctx context.Context, req SetInnerMeshProfileRequest) error
+	EnableInnerMesh(ctx context.Context) error
+	DisableInnerMesh(ctx context.Context) error
+	GetInnerMeshDiagnostics(ctx context.Context) (InnerMeshDiagnosticsReply, error)
 }
 
 // PeerCreds carries the OS-level credentials the transport authenticated

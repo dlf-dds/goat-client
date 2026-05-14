@@ -135,6 +135,26 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 		}
 		out, err := d.h.SetMode(ctx, p)
 		fillResult(&resp, out, err)
+	case MethodGetInnerMeshStatus:
+		out, err := d.h.GetInnerMeshStatus(ctx)
+		fillResult(&resp, out, err)
+	case MethodSetInnerMeshProfile:
+		var p SetInnerMeshProfileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		err := d.h.SetInnerMeshProfile(ctx, p)
+		fillResult(&resp, EmptyReply{}, err)
+	case MethodEnableInnerMesh:
+		err := d.h.EnableInnerMesh(ctx)
+		fillResult(&resp, EmptyReply{}, err)
+	case MethodDisableInnerMesh:
+		err := d.h.DisableInnerMesh(ctx)
+		fillResult(&resp, EmptyReply{}, err)
+	case MethodGetInnerMeshDiagnostics:
+		out, err := d.h.GetInnerMeshDiagnostics(ctx)
+		fillResult(&resp, out, err)
 	default:
 		resp.Error = &rpcError{Code: errCodeMethodNotFound, Message: ErrUnknownMethod.Error()}
 	}
@@ -149,7 +169,8 @@ func (d *Dispatcher) authorizedForMutate() bool {
 
 func isMutating(m Method) bool {
 	switch m {
-	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode:
+	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode,
+		MethodSetInnerMeshProfile, MethodEnableInnerMesh, MethodDisableInnerMesh:
 		return true
 	}
 	return false
