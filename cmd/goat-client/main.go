@@ -107,7 +107,7 @@ func runGetMode(args []string) int {
 		fmt.Fprintf(os.Stderr, "getmode: %v\n", err)
 		return 1
 	}
-	fmt.Println(m)
+	fmt.Fprintln(os.Stdout, m)
 	return 0
 }
 
@@ -140,6 +140,6 @@ func runSetMode(args []string) int {
 		fmt.Fprintf(os.Stderr, "setmode: %v\n", err)
 		return 1
 	}
-	fmt.Printf("mode: %s → %s\n", prev, m)
+	fmt.Fprintf(os.Stdout, "mode: %s → %s\n", prev, m)
 	return 0
 }
