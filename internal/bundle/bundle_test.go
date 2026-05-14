@@ -133,6 +133,151 @@ func TestCheckExpiry(t *testing.T) {
 	}
 }
 
+// TestV0_2FieldsOmitWhenEmpty is the load-bearing property test: a
+// bundle with InnerMeshSetup{} and empty MobileCert must marshal to
+// bytes byte-identical to a hypothetical pre-v0.2 bundle (the same
+// fields without the v0.2 additions). If the omitempty handling is
+// wrong, every v0.1.x bundle in the wild would stop verifying after
+// this parser change rolls out — exactly the regression the brief
+// forbids.
+func TestV0_2FieldsOmitWhenEmpty(t *testing.T) {
+	b1, _, _ := newTestBundle(t)
+	b2 := *b1
+	b2.InnerMeshSetup = InnerMeshSetup{}
+	b2.MobileCert = nil
+
+	bytes1, err := b1.Marshal()
+	if err != nil {
+		t.Fatalf("b1 marshal: %v", err)
+	}
+	bytes2, err := b2.Marshal()
+	if err != nil {
+		t.Fatalf("b2 marshal: %v", err)
+	}
+	if len(bytes1) != len(bytes2) {
+		t.Fatalf("v0.2 zero-value fields changed wire bytes: len(b1)=%d len(b2)=%d", len(bytes1), len(bytes2))
+	}
+	for i := range bytes1 {
+		if bytes1[i] != bytes2[i] {
+			t.Fatalf("byte mismatch at index %d", i)
+		}
+	}
+}
+
+func TestV0_2BundleRoundTripVerify(t *testing.T) {
+	b, priv, pub := newTestBundle(t)
+	b.InnerMeshSetup = InnerMeshSetup{
+		ManagementURL:    "https://mgmt.example.internal:33073",
+		SetupKey:         "ABCDEFGH-IJKLMNOP",
+		AdminAccessToken: "admin-token-opaque",
+		PreSharedKey:     make([]byte, 32),
+	}
+	b.MobileCert = []byte("-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----\n")
+	// Re-sign because the payload changed.
+	if err := b.Sign(func(payload []byte) ([]byte, error) {
+		digest := sha256.Sum256(payload)
+		return ecdsa.SignASN1(rand.Reader, priv, digest[:])
+	}); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	wire, err := b.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := Unmarshal(wire)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.HasInnerMesh() {
+		t.Errorf("HasInnerMesh: got false, want true")
+	}
+	if !got.HasMobileCert() {
+		t.Errorf("HasMobileCert: got false, want true")
+	}
+	if got.InnerMeshSetup.ManagementURL != b.InnerMeshSetup.ManagementURL {
+		t.Errorf("InnerMeshSetup.ManagementURL: got %q, want %q",
+			got.InnerMeshSetup.ManagementURL, b.InnerMeshSetup.ManagementURL)
+	}
+	if got.InnerMeshSetup.SetupKey != b.InnerMeshSetup.SetupKey {
+		t.Errorf("InnerMeshSetup.SetupKey: got %q, want %q",
+			got.InnerMeshSetup.SetupKey, b.InnerMeshSetup.SetupKey)
+	}
+	if err := got.Verify(pub); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}
+
+func TestHasInnerMeshAndHasWgCp0(t *testing.T) {
+	cases := []struct {
+		name string
+		b    EnrollmentBundle
+		hasI bool
+		hasW bool
+	}{
+		{
+			name: "empty",
+			b:    EnrollmentBundle{},
+			hasI: false, hasW: false,
+		},
+		{
+			name: "v1_wg_only",
+			b: EnrollmentBundle{
+				CPDevicePubkey:  make([]byte, 32),
+				CPDevicePrivkey: make([]byte, 32),
+				CPDeviceAddress: "198.18.0.6/24",
+			},
+			hasI: false, hasW: true,
+		},
+		{
+			name: "inner_only",
+			b: EnrollmentBundle{
+				InnerMeshSetup: InnerMeshSetup{
+					ManagementURL: "https://m.example", SetupKey: "k",
+				},
+			},
+			hasI: true, hasW: false,
+		},
+		{
+			name: "combined",
+			b: EnrollmentBundle{
+				CPDevicePubkey:  make([]byte, 32),
+				CPDevicePrivkey: make([]byte, 32),
+				CPDeviceAddress: "198.18.0.6/24",
+				InnerMeshSetup: InnerMeshSetup{
+					ManagementURL: "https://m.example", SetupKey: "k",
+				},
+			},
+			hasI: true, hasW: true,
+		},
+		{
+			name: "inner_partial_mgmt_only",
+			b: EnrollmentBundle{
+				InnerMeshSetup: InnerMeshSetup{ManagementURL: "https://m.example"},
+			},
+			hasI: false, hasW: false,
+		},
+		{
+			name: "wg_unpaired",
+			b: EnrollmentBundle{
+				CPDevicePubkey:  make([]byte, 32),
+				CPDeviceAddress: "198.18.0.6/24",
+			},
+			hasI: false, hasW: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.b.HasInnerMesh(); got != tc.hasI {
+				t.Errorf("HasInnerMesh: got %v, want %v", got, tc.hasI)
+			}
+			if got := tc.b.HasWgCp0(); got != tc.hasW {
+				t.Errorf("HasWgCp0: got %v, want %v", got, tc.hasW)
+			}
+		})
+	}
+}
+
 func TestCheckCPDeviceKeypairUnpaired(t *testing.T) {
 	b := &EnrollmentBundle{CPDevicePubkey: []byte("only-pub")}
 	if err := b.CheckCPDeviceKeypair(); !errors.Is(err, ErrCPDeviceKeypairUnpaired) {

@@ -105,7 +105,92 @@ type EnrollmentBundle struct {
 	CPDevicePrivkey []byte `cbor:"cp_device_privkey,omitempty"`
 	CPDeviceAddress string `cbor:"cp_device_address,omitempty"`
 
+	// InnerMeshSetup is the v0.2 extension carrying mgmt URL + setup
+	// key (+ optional admin token + PSK) for the netbird inner mesh.
+	// Populated when the issuing operator wants the device to run in
+	// `netbird-only` or `combined` mode (per ADR 0840 Amendment
+	// 2026-05-13). Absent for v0.1.x-shape bundles — the parser
+	// treats absent as "wg-cp0-only-eligible only."
+	//
+	// The CBOR encoder omits the field when all sub-fields are zero
+	// (omitempty on the struct value), so v1 bundles whose issuer did
+	// not populate this field round-trip byte-identically through
+	// new parser code. The wire-compat property is asserted in
+	// TestV0_2FieldsOmitWhenEmpty so v0.1.x bundles in the wild
+	// continue to verify after this rolls out.
+	InnerMeshSetup InnerMeshSetup `cbor:"inner_mesh_setup,omitempty"`
+
+	// MobileCert is the Block 80F per-device mTLS client cert + key
+	// (PEM-bundled, leaf cert first, any intermediate chain, then
+	// the private key block). Used when the device reaches mgmt +
+	// signal + relay through the Block 80 / ADR 0843 public-mTLS
+	// crutch tier in `netbird-only` mode. Absent for v0.1.x bundles
+	// and for devices that reach the inner mesh directly without the
+	// crutch.
+	MobileCert []byte `cbor:"mobile_cert,omitempty"`
+
 	Signature []byte `cbor:"signature,omitempty"`
+}
+
+// InnerMeshSetup is the v0.2 nested-field shape carried inside
+// EnrollmentBundle. Mirrors goat-trunk's bundle schema; the
+// Go-side stable shape lives in internal/innermesh and is derived
+// from this via innermesh.FromBundle.
+//
+// Fields with zero values are omitted on the wire (the parent
+// struct's omitempty drops the whole nested map when all sub-fields
+// are zero). The inner-mesh eligibility test is
+// (*EnrollmentBundle).HasInnerMesh — true when ManagementURL and
+// SetupKey are both non-empty.
+type InnerMeshSetup struct {
+	// ManagementURL is the netbird management plane endpoint. Must
+	// be https. Examples:
+	//   https://mgmt.example.internal
+	//   https://mgmt.example.internal:33073
+	//   https://mgmt-crutch.example.public  (Block 80 crutch tier)
+	ManagementURL string `cbor:"management_url,omitempty"`
+
+	// SetupKey is the netbird setup-key string presented on first
+	// registration.
+	SetupKey string `cbor:"setup_key,omitempty"`
+
+	// AdminAccessToken is the optional bearer token for the netbird
+	// management API. Surface used by the diagnostics IPC method.
+	AdminAccessToken string `cbor:"admin_access_token,omitempty"`
+
+	// PreSharedKey is the optional WireGuard PSK passed through to
+	// the inner-mesh userspace device. 32 bytes when set.
+	PreSharedKey []byte `cbor:"pre_shared_key,omitempty"`
+}
+
+// HasInnerMesh reports whether the bundle carries enough information
+// to attempt the netbird inner mesh (`netbird-only` or `combined`
+// modes). Tests the InnerMeshSetup nested struct rather than the
+// presence of the CBOR field — both encodings (absent map / map with
+// zero values) collapse to the same Go shape after Unmarshal, which
+// is the property `omitempty` gives us.
+func (b *EnrollmentBundle) HasInnerMesh() bool {
+	return b.InnerMeshSetup.ManagementURL != "" && b.InnerMeshSetup.SetupKey != ""
+}
+
+// HasWgCp0 reports whether the bundle carries enough information to
+// attempt the wg-cp0 outer tunnel (`wg-cp0-only` or `combined`
+// modes). The CP device keypair must be present and paired, and the
+// device address must be set.
+func (b *EnrollmentBundle) HasWgCp0() bool {
+	if err := b.CheckCPDeviceKeypair(); err != nil {
+		return false
+	}
+	return len(b.CPDevicePubkey) == 32 &&
+		len(b.CPDevicePrivkey) == 32 &&
+		b.CPDeviceAddress != ""
+}
+
+// HasMobileCert reports whether the bundle carries a Block 80F
+// per-device mTLS client cert + key. Required when the bundle's
+// inner-mesh ManagementURL targets the Block 80 crutch tier.
+func (b *EnrollmentBundle) HasMobileCert() bool {
+	return len(b.MobileCert) > 0
 }
 
 func canonicalEnc() (cbor.EncMode, error) {
