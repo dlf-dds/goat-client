@@ -12,6 +12,7 @@ ExecStart=/usr/bin/goat-clientd \
     --bundle-dir=/var/lib/goat-client \
     --ipc-socket=/run/goat-client/ipc.sock \
     --log-file=/var/log/goat-client/goat-clientd.log \
+    --config=/etc/goat-client/config.toml \
     $GOAT_CLIENTD_FLAGS
 Restart=on-failure
 RestartSec=5

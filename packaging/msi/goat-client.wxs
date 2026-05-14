@@ -37,6 +37,11 @@
         <!-- Autostart of the GUI is opt-in; on by default. AUTOSTART=0 disables. -->
         <Property Id="AUTOSTART" Value="1" />
 
+        <!-- v0.2 mode selector. Operators pass via:
+             msiexec /qn /i goat-client.msi GOATMODE=combined
+             Valid values: wg-cp0-only | netbird-only | combined. Default = combined. -->
+        <Property Id="GOATMODE" Value="combined" />
+
         <StandardDirectory Id="ProgramFiles64Folder">
             <Directory Id="GoatClientInstallDir" Name="goat-client">
                 <Component Id="GoatClientFiles"
@@ -93,7 +98,7 @@
                                     Account="LocalSystem"
                                     Vital="yes"
                                     Interactive="no"
-                                    Arguments="run --bundle-dir=&quot;[CommonAppDataFolder]goat-client&quot; --ipc-pipe=\\.\pipe\goat-client" />
+                                    Arguments="run --bundle-dir=&quot;[CommonAppDataFolder]goat-client&quot; --ipc-pipe=\\.\pipe\goat-client --config=&quot;[CommonAppDataFolder]goat-client\config.toml&quot;" />
                     <ServiceControl Id="GoatClientServiceControl"
                                     Name="goat-clientd"
                                     Start="install"
@@ -142,10 +147,43 @@
             </Directory>
         </StandardDirectory>
 
+        <!-- v0.2 mode-config registry value. The daemon's start-up
+             reads this via mode.DefaultConfigPath() (which on Windows
+             resolves to %ProgramData%\goat-client\config.toml). We
+             persist the operator-selected mode by writing the file
+             directly via a CustomAction; the registry entry mirrors
+             the choice for operators auditing via reg query. -->
+        <StandardDirectory Id="CommonAppDataFolder">
+            <Directory Id="GoatClientConfigDir" Name="goat-client">
+                <Component Id="GoatClientModeRegistry" Guid="3d9b8e1c-4f6a-4a2d-9e3b-5c0d7f4e2a01">
+                    <RegistryKey Root="HKLM"
+                                 Key="Software\dlf-dds\goat-client"
+                                 ForceDeleteOnUninstall="yes">
+                        <RegistryValue Name="Mode" Type="string" Value="[GOATMODE]" KeyPath="yes" />
+                    </RegistryKey>
+                </Component>
+            </Directory>
+        </StandardDirectory>
+
+        <!-- CustomAction: write %ProgramData%\goat-client\config.toml
+             with the operator's chosen mode. Runs deferred + with
+             elevated privileges so the daemon picks it up on first
+             start (Service Start="auto" runs after this completes). -->
+        <CustomAction Id="WriteGoatModeConfig"
+                      Directory="GoatClientInstallDir"
+                      ExeCommand="cmd.exe /c &quot;mkdir &quot;%ProgramData%\goat-client&quot; 2&gt;nul &amp; (echo # goat-client config (v0.2). Managed by the installer + `goat-client setmode`.&amp; echo mode = &quot;[GOATMODE]&quot;) &gt; &quot;%ProgramData%\goat-client\config.toml&quot;&quot;"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+        <InstallExecuteSequence>
+            <Custom Action="WriteGoatModeConfig" After="InstallFiles" Condition="NOT Installed" />
+        </InstallExecuteSequence>
+
         <ComponentGroup Id="GoatClientFilesComponent">
             <ComponentRef Id="GoatClientFiles" />
             <ComponentRef Id="GoatClientAumidRegistry" />
             <ComponentRef Id="GoatClientAutoStart" />
+            <ComponentRef Id="GoatClientModeRegistry" />
         </ComponentGroup>
 
         <!-- Close running instances before upgrade. -->

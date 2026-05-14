@@ -3,6 +3,11 @@
 # the .app bundle to /Applications and the daemon binary to
 # /usr/local/bin; this script wires up launchd, log dirs, and a
 # convenience symlink).
+#
+# v0.2: writes the mode-config file. Mode comes from the GOAT_MODE env
+# var (which the .pkg installer can pass via productbuild's
+# --packagepath choices or via `installer -applyChoiceChangesXML`).
+# Without an explicit choice the default is combined.
 
 set -ex
 
@@ -11,9 +16,29 @@ LAUNCHD_PLIST=/Library/LaunchDaemons/io.dlf-dds.goat-clientd.plist
 LOG_DIR=/var/log/goat-client
 SUPPORT_DIR="/Library/Application Support/goat-client"
 RUN_DIR=/var/run/goat-client
+CONFIG_FILE="$SUPPORT_DIR/config.toml"
 
 mkdir -p "$LOG_DIR" "$SUPPORT_DIR" "$RUN_DIR"
 chmod 0755 "$LOG_DIR" "$SUPPORT_DIR" "$RUN_DIR"
+
+# Mode resolution: env var > existing config.toml > combined default.
+mode_value="${GOAT_MODE:-}"
+case "$mode_value" in
+    wg-cp0-only|netbird-only|combined) ;;
+    *)
+        if [ -n "$mode_value" ]; then
+            echo "goat-client postinstall: invalid GOAT_MODE=$mode_value; falling back to combined" >&2
+        fi
+        mode_value="combined"
+        ;;
+esac
+if [ ! -f "$CONFIG_FILE" ]; then
+    cat > "$CONFIG_FILE" <<EOF
+# goat-client config (v0.2). Managed by the installer + \`goat-client setmode\`.
+mode = "$mode_value"
+EOF
+    chmod 0644 "$CONFIG_FILE"
+fi
 
 # launchd will refuse to load a plist not owned by root:wheel with mode 0644.
 chown root:wheel "$LAUNCHD_PLIST"

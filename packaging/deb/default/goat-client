@@ -5,4 +5,14 @@
 # Examples:
 #   --log-level=debug
 #   --userspace-wg          # force wireguard-go even if kernel WG is present
+#   --mode=combined         # override /etc/goat-client/config.toml at runtime
 GOAT_CLIENTD_FLAGS=
+
+# v0.2 mode selector. Read by the deb / rpm postinstall scripts when
+# (re)writing /etc/goat-client/config.toml on install. Empty value means
+# "use the daemon's default" (combined). Operators can edit this file
+# and re-run `dpkg-reconfigure goat-client` to re-apply, or just use
+# `goat-client setmode <mode>` at runtime.
+#
+# Valid values: wg-cp0-only | netbird-only | combined
+GOAT_MODE=

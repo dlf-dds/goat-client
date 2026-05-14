@@ -31,6 +31,22 @@ Same logical layout across platforms — only the path conventions differ:
 The daemon listens on the IPC socket / pipe; the GUI talks to it via JSON-RPC.
 Track A defines the IPC method set.
 
+## v0.2 mode selection at install time
+
+goat-client v0.2 supports three modes (wg-cp0-only / netbird-only /
+combined). The mode is persisted to a small `config.toml` that the
+daemon reads on start-up; each packager has a way to seed it at install:
+
+| Format | Mode argument | Persisted at |
+|--------|---------------|--------------|
+| deb    | `GOAT_MODE=combined apt install ./goat-client_*.deb` (or edit `/etc/default/goat-client`, then reinstall) | `/etc/goat-client/config.toml` |
+| rpm    | `GOAT_MODE=combined dnf install goat-client-*.rpm` (or edit `/etc/sysconfig/goat-client`, then reinstall) | `/etc/goat-client/config.toml` |
+| dmg    | `sudo installer -pkg goat-client.pkg -target / GOAT_MODE=combined` (env passed through to postinstall) | `/Library/Application Support/goat-client/config.toml` |
+| msi    | `msiexec /qn /i goat-client.msi GOATMODE=combined` | `%ProgramData%\goat-client\config.toml` |
+
+The default if no mode is specified is `combined`. Operators can switch
+modes at runtime without reinstalling via `goat-client setmode <mode>`.
+
 ## Driving each packager
 
 ### deb / rpm — `nfpm` (linux)
