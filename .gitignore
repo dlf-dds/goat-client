@@ -95,6 +95,19 @@ SHA256SUMS
 .claude/worktrees/
 .claude/local/
 .claude/settings.local.json
+# Operator-specific Claude Code session config (per-checkout permission
+# allowlists etc.). Stays local.
+.claude/settings.json
+
+# ---- Mobile-pipeline local artifacts --------------------------------------
+# Playwright MCP session artifacts (page snapshots, console logs) — generated
+# locally by browser-automation MCP tools.
+.playwright-mcp/
+
+# iOS archive + ipa output. The archive-and-upload.sh script writes here.
+# Build artifacts are uploaded to TestFlight directly; nothing here should
+# be committed.
+/build/
 
 # ---- IDE state -----------------------------------------------------------
 .vscode/
