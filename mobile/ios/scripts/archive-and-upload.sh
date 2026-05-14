@@ -72,6 +72,18 @@ echo "==> xcodegen generate"
 ARCHIVE_PATH="$BUILD_DIR/GoatClient.xcarchive"
 rm -rf "$ARCHIVE_PATH"
 
+# Pass the ASC API key to xcodebuild so -allowProvisioningUpdates can
+# fetch the Distribution cert + provisioning profiles without an Apple
+# ID signed into Xcode's Settings → Accounts.
+ASC_AUTH_FLAGS=()
+if [[ -n "${ASC_API_KEY_ID:-}" && -n "${ASC_API_ISSUER_ID:-}" && -n "${ASC_API_KEY_PATH:-}" ]]; then
+    ASC_AUTH_FLAGS=(
+        -authenticationKeyID "$ASC_API_KEY_ID"
+        -authenticationKeyIssuerID "$ASC_API_ISSUER_ID"
+        -authenticationKeyPath "$ASC_API_KEY_PATH"
+    )
+fi
+
 echo "==> xcodebuild archive"
 xcodebuild \
     -project "$SHELL_DIR/GoatClient.xcodeproj" \
@@ -80,6 +92,7 @@ xcodebuild \
     -destination "generic/platform=iOS" \
     -archivePath "$ARCHIVE_PATH" \
     -allowProvisioningUpdates \
+    "${ASC_AUTH_FLAGS[@]}" \
     archive
 
 # ─── 5. Export the archive to an .ipa using App Store Connect options ───────
@@ -113,7 +126,8 @@ xcodebuild \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$IPA_DIR" \
     -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
-    -allowProvisioningUpdates
+    -allowProvisioningUpdates \
+    "${ASC_AUTH_FLAGS[@]}"
 
 IPA_PATH="$(find "$IPA_DIR" -name '*.ipa' -maxdepth 2 | head -1)"
 if [[ -z "$IPA_PATH" || ! -f "$IPA_PATH" ]]; then
@@ -132,11 +146,13 @@ if [[ "${SKIP_UPLOAD:-0}" == "1" ]]; then
     exit 0
 fi
 
-# altool reads the .p8 key from ~/.appstoreconnect/AuthKey_<KEY_ID>.p8 OR
-# ~/.private_keys/AuthKey_<KEY_ID>.p8 OR via the legacy --apiKeyPath flag.
-# Symlink the configured path into the canonical location so altool finds it.
-mkdir -p "$HOME/.appstoreconnect"
-CANONICAL_KEY="$HOME/.appstoreconnect/AuthKey_${ASC_API_KEY_ID}.p8"
+# altool searches a fixed list of locations for the AuthKey:
+#   ./private_keys/  ~/private_keys/  ~/.private_keys/  ~/.appstoreconnect/private_keys/
+# It does NOT search ~/.appstoreconnect/ directly. Symlink the
+# operator-configured ASC_API_KEY_PATH into ~/.appstoreconnect/private_keys/
+# so altool finds it without requiring a non-standard `mv`.
+mkdir -p "$HOME/.appstoreconnect/private_keys"
+CANONICAL_KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
 if [[ "$(realpath "$ASC_API_KEY_PATH" 2>/dev/null)" != "$(realpath "$CANONICAL_KEY" 2>/dev/null)" ]]; then
     ln -sf "$(realpath "$ASC_API_KEY_PATH")" "$CANONICAL_KEY"
 fi
