@@ -146,6 +146,7 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 		return nil, err
 	}
 	out := &StatusInfo{
+		Mode:           reply.Mode,
 		State:          mapWireState(reply.State),
 		BytesIn:        reply.BytesIn,
 		BytesOut:       reply.BytesOut,
@@ -164,6 +165,15 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 			Endpoints:  reply.ConfiguredEndpoints,
 		}
 	}
+	if reply.InnerMesh != nil {
+		out.InnerMesh = &InnerMeshInfo{
+			State:         mapWireState(reply.InnerMesh.State),
+			PeerCount:     reply.InnerMesh.PeerCount,
+			BytesIn:       reply.InnerMesh.BytesIn,
+			BytesOut:      reply.InnerMesh.BytesOut,
+			LastHandshake: reply.InnerMesh.LastHandshake,
+		}
+	}
 	return out, nil
 }
 
@@ -173,6 +183,25 @@ func (c *realClient) Connect(ctx context.Context) error {
 
 func (c *realClient) Disconnect(ctx context.Context) error {
 	return c.rpc.call(MethodDisconnect, EmptyRequest{}, nil, 10*time.Second)
+}
+
+func (c *realClient) GetMode(ctx context.Context) (string, error) {
+	var reply GetModeReply
+	if err := c.rpc.call(MethodGetMode, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		return "", err
+	}
+	return reply.Mode, nil
+}
+
+func (c *realClient) SetMode(ctx context.Context, mode string) (string, error) {
+	var reply SetModeReply
+	// Mode-switch needs to tear down + bring up subsystems; the daemon
+	// budgets ~30s for the verdict-gate. The IPC timeout is generous
+	// against that.
+	if err := c.rpc.call(MethodSetMode, SetModeRequest{Mode: mode}, &reply, 60*time.Second); err != nil {
+		return "", err
+	}
+	return reply.PreviousMode, nil
 }
 
 func (c *realClient) GetDiagnostics(ctx context.Context) (*Diagnostics, error) {

@@ -24,12 +24,15 @@ import (
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
 	"github.com/dlf-dds/goat-client/internal/daemon"
+	"github.com/dlf-dds/goat-client/internal/mode"
 )
 
 func main() {
 	bundlePath := flag.String("bundle", daemon.DefaultBundlePath(), "path to persisted CBOR bundle")
 	trustRootsPath := flag.String("trust-roots", daemon.DefaultTrustRootsPath(), "path to PEM file containing offline-CA Ed25519 public keys")
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "IPC endpoint (Unix socket path or Windows named-pipe name)")
+	configPath := flag.String("config", mode.DefaultConfigPath(), "path to goat-client config.toml (v0.2 mode selector)")
+	modeFlag := flag.String("mode", "", "v0.2 active mode override (wg-cp0-only|netbird-only|combined); empty = use --config file")
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -41,12 +44,24 @@ func main() {
 		os.Exit(2)
 	}
 
+	var initialMode mode.Mode
+	if *modeFlag != "" {
+		m, err := mode.Parse(*modeFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "--mode: %v\n", err)
+			os.Exit(2)
+		}
+		initialMode = m
+	}
+
 	d, err := daemon.New(daemon.Config{
 		BundlePath:  *bundlePath,
 		SocketPath:  *socketPath,
 		TrustRoots:  trustRoots,
 		TrustedUid:  uint32(os.Getuid()),
 		LogTailSize: 256,
+		ConfigPath:  *configPath,
+		InitialMode: initialMode,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon init: %v\n", err)

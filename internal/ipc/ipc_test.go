@@ -32,9 +32,14 @@ type fakeHandler struct {
 	importCalls int
 	connectCalls int
 	disconnectCalls int
+	getModeCalls int
+	setModeCalls int
 	statusReply StatusReply
 	importReply ImportBundleReply
 	importErr   error
+	modeReply   GetModeReply
+	setModeRecv SetModeRequest
+	setModeReply SetModeReply
 }
 
 func (f *fakeHandler) ImportBundle(ctx context.Context, req ImportBundleRequest) (ImportBundleReply, error) {
@@ -64,6 +69,21 @@ func (f *fakeHandler) Disconnect(ctx context.Context) error {
 
 func (f *fakeHandler) GetDiagnostics(ctx context.Context) (DiagnosticsReply, error) {
 	return DiagnosticsReply{LogTail: []string{"ok"}}, nil
+}
+
+func (f *fakeHandler) GetMode(ctx context.Context) (GetModeReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getModeCalls++
+	return f.modeReply, nil
+}
+
+func (f *fakeHandler) SetMode(ctx context.Context, req SetModeRequest) (SetModeReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setModeCalls++
+	f.setModeRecv = req
+	return f.setModeReply, nil
 }
 
 func startServer(t *testing.T, h Handler) (string, *Server) {
@@ -138,6 +158,37 @@ func TestConnectDisconnect(t *testing.T) {
 	}
 	if h.connectCalls != 1 || h.disconnectCalls != 1 {
 		t.Errorf("connect/disconnect counts: %d/%d", h.connectCalls, h.disconnectCalls)
+	}
+}
+
+func TestGetSetModeRoundTrip(t *testing.T) {
+	h := &fakeHandler{
+		modeReply:    GetModeReply{Mode: "wg-cp0-only"},
+		setModeReply: SetModeReply{PreviousMode: "wg-cp0-only", Mode: "combined"},
+	}
+	socket, srv := startServer(t, h)
+	defer srv.Close()
+	conn, _ := Dial(socket)
+	cli := newRPCClient(conn)
+	defer cli.Close()
+
+	var gm GetModeReply
+	if err := cli.call(MethodGetMode, EmptyRequest{}, &gm, 5*time.Second); err != nil {
+		t.Fatalf("getMode: %v", err)
+	}
+	if gm.Mode != "wg-cp0-only" {
+		t.Errorf("getMode reply=%q want wg-cp0-only", gm.Mode)
+	}
+
+	var sm SetModeReply
+	if err := cli.call(MethodSetMode, SetModeRequest{Mode: "combined"}, &sm, 5*time.Second); err != nil {
+		t.Fatalf("setMode: %v", err)
+	}
+	if sm.PreviousMode != "wg-cp0-only" || sm.Mode != "combined" {
+		t.Errorf("setMode reply prev=%q new=%q", sm.PreviousMode, sm.Mode)
+	}
+	if h.setModeRecv.Mode != "combined" {
+		t.Errorf("handler received mode=%q want combined", h.setModeRecv.Mode)
 	}
 }
 

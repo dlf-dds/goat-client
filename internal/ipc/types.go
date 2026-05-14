@@ -22,7 +22,12 @@ const (
 // StatusInfo is the snapshot the GUI renders on the status pane and uses to
 // pick the systray icon color. All fields are zero-valued when the daemon
 // has no bundle imported or no tunnel up.
+//
+// v0.2: Mode + InnerMesh fields carry the multi-subsystem shape. State /
+// InterfaceName / etc. continue to describe the wg-cp0 outer tunnel;
+// InnerMesh describes the inner-mesh leg when present.
 type StatusInfo struct {
+	Mode           string       `json:"mode,omitempty"`
 	State          State        `json:"state"`
 	InterfaceName  string       `json:"interface_name,omitempty"`
 	LastHandshake  time.Time    `json:"last_handshake,omitempty"`
@@ -33,6 +38,16 @@ type StatusInfo struct {
 	BundleImported bool         `json:"bundle_imported"`
 	Bundle         *BundleInfo  `json:"bundle,omitempty"`
 	ErrorMessage   string       `json:"error_message,omitempty"`
+	InnerMesh      *InnerMeshInfo `json:"inner_mesh,omitempty"`
+}
+
+// InnerMeshInfo mirrors InnerMeshSnapshot for the GUI side.
+type InnerMeshInfo struct {
+	State         State     `json:"state"`
+	PeerCount     int       `json:"peer_count"`
+	BytesIn       uint64    `json:"bytes_in"`
+	BytesOut      uint64    `json:"bytes_out"`
+	LastHandshake time.Time `json:"last_handshake,omitempty"`
 }
 
 // BundleInfo summarises an imported bundle for display in the GUI.
@@ -79,6 +94,18 @@ type Client interface {
 
 	// GetDiagnostics returns log tail + last reachability probe info.
 	GetDiagnostics(ctx context.Context) (*Diagnostics, error)
+
+	// GetMode returns the current v0.2 mode (wg-cp0-only / netbird-only /
+	// combined). The GUI uses this to seed the Settings → Mode panel
+	// default selection.
+	GetMode(ctx context.Context) (string, error)
+
+	// SetMode asks the daemon to switch to a new mode. The daemon tears
+	// down the active subsystems for the previous mode and brings up the
+	// new mode's subsystems; the GUI shows a "Reconnecting tunnels…"
+	// dialog until GetStatus reports the new active state. Returns the
+	// previous mode for diff / rollback purposes.
+	SetMode(ctx context.Context, mode string) (previous string, err error)
 
 	// Close releases any underlying transport resources.
 	Close() error

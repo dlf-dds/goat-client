@@ -28,7 +28,9 @@ import (
 	"time"
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/ipc"
+	"github.com/dlf-dds/goat-client/internal/mode"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
 	tunneldns "github.com/dlf-dds/goat-client/internal/tunnel/dns"
 )
@@ -55,6 +57,21 @@ type Config struct {
 
 	// LogTailSize bounds the in-memory diagnostic log buffer.
 	LogTailSize int
+
+	// ConfigPath is the path to the persisted mode-config file (v0.2).
+	// Missing file means use mode.Default. Empty path skips persistence
+	// (test-only).
+	ConfigPath string
+
+	// InitialMode overrides the persisted mode when non-empty. The
+	// daemon binary's --mode flag sets this so the install-time
+	// argument takes precedence over a stale config file.
+	InitialMode mode.Mode
+
+	// InnerMeshFactory builds the inner-mesh subsystem on demand. nil
+	// means use innermesh.New() (which today returns the Fake, until
+	// Worker A's Block 76N lands). Tests pass a fake directly.
+	InnerMeshFactory func() innermesh.Mesh
 }
 
 // Daemon is the long-lived orchestrator. Safe for concurrent use by the
@@ -63,14 +80,17 @@ type Daemon struct {
 	cfg Config
 
 	mu             sync.RWMutex
+	currentMode    mode.Mode
 	currentBundle  *bundle.EnrollmentBundle
 	manager        *tunnel.Manager
+	mesh           innermesh.Mesh
 	dnsAdapter     tunneldns.Adapter
 	startedAt      time.Time
 	lastConnect    time.Time
 	lastErr        error
 	logTail        []string
 	logIdx         int
+	meshFactory    func() innermesh.Mesh
 }
 
 // New constructs a Daemon. Side-effect-free until LoadPersistedBundle /
@@ -89,13 +109,38 @@ func New(cfg Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dns adapter: %w", err)
 	}
-	return &Daemon{
-		cfg:        cfg,
-		manager:    tunnel.NewManager(),
-		dnsAdapter: dnsAdapter,
-		startedAt:  time.Now(),
-		logTail:    make([]string, cfg.LogTailSize),
-	}, nil
+	meshFactory := cfg.InnerMeshFactory
+	if meshFactory == nil {
+		meshFactory = innermesh.New
+	}
+	// Resolve initial mode: explicit override > config file > Default.
+	resolved := cfg.InitialMode
+	if resolved == "" && cfg.ConfigPath != "" {
+		m, err := mode.LoadOrDefault(cfg.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load mode config: %w", err)
+		}
+		resolved = m
+	}
+	if resolved == "" {
+		resolved = mode.Default
+	}
+	if !resolved.Valid() {
+		return nil, fmt.Errorf("daemon: invalid initial mode %q", resolved)
+	}
+	d := &Daemon{
+		cfg:         cfg,
+		currentMode: resolved,
+		manager:     tunnel.NewManager(),
+		dnsAdapter:  dnsAdapter,
+		startedAt:   time.Now(),
+		logTail:     make([]string, cfg.LogTailSize),
+		meshFactory: meshFactory,
+	}
+	if resolved.IncludesNetbird() {
+		d.mesh = meshFactory()
+	}
+	return d, nil
 }
 
 // LoadPersistedBundle reads BundlePath if it exists, parses + verifies,
@@ -155,6 +200,18 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	}
 	if err := d.manager.Disconnect(ctx); err != nil {
 		d.logf("manager disconnect: %v", err)
+	}
+	d.mu.Lock()
+	mesh := d.mesh
+	d.mesh = nil
+	d.mu.Unlock()
+	if mesh != nil {
+		if err := mesh.Disconnect(ctx); err != nil {
+			d.logf("mesh disconnect: %v", err)
+		}
+		if err := mesh.Close(); err != nil {
+			d.logf("mesh close: %v", err)
+		}
 	}
 	return d.manager.Close()
 }
@@ -237,11 +294,28 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 	d.mu.RLock()
 	b := d.currentBundle
 	lastErr := d.lastErr
+	currentMode := d.currentMode
+	mesh := d.mesh
 	d.mu.RUnlock()
-	state := mapTunnelState(d.manager.State(), b != nil)
 	reply := ipc.StatusReply{
-		State:        state,
+		Mode:         currentMode.String(),
 		BundleLoaded: b != nil,
+	}
+	if currentMode.IncludesWGCP0() {
+		reply.State = mapTunnelState(d.manager.State(), b != nil)
+		if stats, err := d.manager.Stats(); err == nil {
+			reply.BytesIn = stats.BytesIn
+			reply.BytesOut = stats.BytesOut
+			reply.LastHandshake = stats.LastHandshake
+		}
+	} else {
+		// Outer is intentionally not running — render as disconnected for
+		// the wg-cp0 leg; GUI keys off Mode to decide whether to show
+		// the outer card at all.
+		reply.State = ipc.WireStateDisconnected
+		if !reply.BundleLoaded {
+			reply.State = ipc.WireStateNoBundle
+		}
 	}
 	if b != nil {
 		reply.DeviceID = b.DeviceID
@@ -254,10 +328,15 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 		}
 		reply.ConfiguredEndpoints = eps
 	}
-	if stats, err := d.manager.Stats(); err == nil {
-		reply.BytesIn = stats.BytesIn
-		reply.BytesOut = stats.BytesOut
-		reply.LastHandshake = stats.LastHandshake
+	if currentMode.IncludesNetbird() && mesh != nil {
+		snap := &ipc.InnerMeshSnapshot{State: mapMeshState(mesh.State())}
+		if st, err := mesh.Stats(); err == nil {
+			snap.PeerCount = st.PeerCount
+			snap.BytesIn = st.BytesIn
+			snap.BytesOut = st.BytesOut
+			snap.LastHandshake = st.LastHandshake
+		}
+		reply.InnerMesh = snap
 	}
 	if lastErr != nil {
 		reply.ErrorMessage = lastErr.Error()
@@ -265,61 +344,219 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 	return reply, nil
 }
 
-// Connect brings the tunnel up. Requires a loaded bundle.
+// GetMode returns the daemon's active mode.
+func (d *Daemon) GetMode(ctx context.Context) (ipc.GetModeReply, error) {
+	d.mu.RLock()
+	m := d.currentMode
+	d.mu.RUnlock()
+	return ipc.GetModeReply{Mode: m.String()}, nil
+}
+
+// SetMode switches the daemon's active mode, tearing down the previous
+// mode's subsystems and bringing up the new mode's subsystems. Persists
+// the new mode to ConfigPath so the daemon picks it up across restarts.
+func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetModeReply, error) {
+	newMode, err := mode.Parse(req.Mode)
+	if err != nil {
+		return ipc.SetModeReply{}, err
+	}
+	d.mu.Lock()
+	prev := d.currentMode
+	if prev == newMode {
+		d.mu.Unlock()
+		return ipc.SetModeReply{PreviousMode: prev.String(), Mode: newMode.String()}, nil
+	}
+	d.currentMode = newMode
+	d.mu.Unlock()
+
+	d.logf("setMode: %s → %s — reconciling", prev, newMode)
+
+	// Reconcile wg-cp0 outer leg.
+	if prev.IncludesWGCP0() && !newMode.IncludesWGCP0() {
+		// Tear down the outer tunnel.
+		if err := d.dnsAdapter.Restore(ctx); err != nil {
+			d.logf("setMode dns restore: %v", err)
+		}
+		if err := d.manager.Disconnect(ctx); err != nil {
+			d.logf("setMode wg-cp0 down: %v", err)
+		}
+	}
+
+	// Reconcile inner-mesh leg.
+	if prev.IncludesNetbird() && !newMode.IncludesNetbird() {
+		d.mu.Lock()
+		mesh := d.mesh
+		d.mesh = nil
+		d.mu.Unlock()
+		if mesh != nil {
+			if err := mesh.Disconnect(ctx); err != nil {
+				d.logf("setMode mesh down: %v", err)
+			}
+			if err := mesh.Close(); err != nil {
+				d.logf("setMode mesh close: %v", err)
+			}
+		}
+	}
+	if !prev.IncludesNetbird() && newMode.IncludesNetbird() {
+		mesh := d.meshFactory()
+		d.mu.Lock()
+		d.mesh = mesh
+		d.mu.Unlock()
+	}
+
+	// Bring up the new mode's subsystems (best-effort; per-leg errors are
+	// surfaced via Diagnostics rather than failing setMode).
+	if newMode.IncludesWGCP0() {
+		d.mu.RLock()
+		b := d.currentBundle
+		d.mu.RUnlock()
+		if b != nil {
+			if cfg, err := tunnel.FromBundle(b); err == nil {
+				if err := d.manager.Configure(cfg); err != nil {
+					d.logf("setMode wg-cp0 configure: %v", err)
+				}
+				if err := d.manager.Connect(ctx); err != nil {
+					d.logf("setMode wg-cp0 up: %v", err)
+				}
+			}
+		}
+	}
+	if newMode.IncludesNetbird() {
+		d.mu.RLock()
+		mesh := d.mesh
+		d.mu.RUnlock()
+		if mesh != nil {
+			if err := mesh.Connect(ctx); err != nil {
+				d.logf("setMode mesh up: %v", err)
+			}
+		}
+	}
+
+	// Persist for next start-up.
+	if d.cfg.ConfigPath != "" {
+		if err := mode.Save(d.cfg.ConfigPath, mode.PersistedConfig{Mode: newMode}); err != nil {
+			d.logf("setMode persist: %v", err)
+		}
+	}
+	d.logf("setMode complete: now %s", newMode)
+	return ipc.SetModeReply{PreviousMode: prev.String(), Mode: newMode.String()}, nil
+}
+
+// mapMeshState translates inner-mesh state into the wire-level TunnelState.
+func mapMeshState(s innermesh.State) ipc.TunnelState {
+	switch s {
+	case innermesh.StateConfiguring:
+		return ipc.WireStateConnecting
+	case innermesh.StateUp:
+		return ipc.WireStateConnected
+	case innermesh.StateError:
+		return ipc.WireStateError
+	}
+	return ipc.WireStateDisconnected
+}
+
+// Connect brings the active mode's subsystems up. Requires a loaded
+// bundle. Per-mode behavior:
+//
+//   - wg-cp0-only: outer tunnel only.
+//   - netbird-only: inner-mesh only.
+//   - combined: both, outer first then inner.
 func (d *Daemon) Connect(ctx context.Context) error {
 	d.mu.RLock()
 	b := d.currentBundle
+	currentMode := d.currentMode
+	mesh := d.mesh
 	d.mu.RUnlock()
 	if b == nil {
 		return errors.New("daemon: no bundle loaded — call importBundle first")
 	}
-	cfg, err := tunnel.FromBundle(b)
-	if err != nil {
-		return fmt.Errorf("derive tunnel config: %w", err)
-	}
-	if err := d.manager.Configure(cfg); err != nil {
-		return fmt.Errorf("configure: %w", err)
-	}
-	if err := d.manager.Connect(ctx); err != nil {
-		d.mu.Lock()
-		d.lastErr = err
-		d.mu.Unlock()
-		return err
+
+	if currentMode.IncludesWGCP0() {
+		cfg, err := tunnel.FromBundle(b)
+		if err != nil {
+			return fmt.Errorf("derive tunnel config: %w", err)
+		}
+		if err := d.manager.Configure(cfg); err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+		if err := d.manager.Connect(ctx); err != nil {
+			d.mu.Lock()
+			d.lastErr = err
+			d.mu.Unlock()
+			return err
+		}
+		dnsCfg := tunneldns.Config{
+			Nameservers:   cfg.DNSServers,
+			SearchDomains: cfg.SearchDomains,
+			MatchDomains:  cfg.MatchDomains,
+		}
+		if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
+			d.logf("dns adapter apply failed (non-fatal): %v", err)
+		}
+		d.logf("wg-cp0 up to %s", cfg.Peer.Endpoint)
 	}
 
-	// Tunnel is up — apply per-OS host-DNS configuration so internal
-	// hostnames resolve through the wg-cp0 resolver. Failure here is
-	// non-fatal: log and continue. Operators can still use raw IPs while
-	// host DNS sorts itself out, and Restore on disconnect is idempotent.
-	dnsCfg := tunneldns.Config{
-		Nameservers:   cfg.DNSServers,
-		SearchDomains: cfg.SearchDomains,
-		MatchDomains:  cfg.MatchDomains,
-	}
-	if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
-		d.logf("dns adapter apply failed (non-fatal): %v", err)
+	if currentMode.IncludesNetbird() {
+		if mesh == nil {
+			mesh = d.meshFactory()
+			d.mu.Lock()
+			d.mesh = mesh
+			d.mu.Unlock()
+		}
+		if err := mesh.Configure(meshConfigFromBundle(b)); err != nil {
+			d.logf("mesh configure: %v", err)
+		}
+		if err := mesh.Connect(ctx); err != nil {
+			d.mu.Lock()
+			d.lastErr = err
+			d.mu.Unlock()
+			return fmt.Errorf("mesh up: %w", err)
+		}
+		d.logf("inner-mesh up")
 	}
 
 	d.mu.Lock()
 	d.lastConnect = time.Now()
 	d.lastErr = nil
 	d.mu.Unlock()
-	d.logf("tunnel up to %s", cfg.Peer.Endpoint)
 	return nil
 }
 
-// Disconnect takes the tunnel down.
+// Disconnect takes the active mode's subsystems down.
 func (d *Daemon) Disconnect(ctx context.Context) error {
-	// Tear DNS down before the tunnel — the host should stop trying to use
-	// the wg-cp0 resolver before the route to it disappears.
-	if err := d.dnsAdapter.Restore(ctx); err != nil {
-		d.logf("dns adapter restore failed (non-fatal): %v", err)
+	d.mu.RLock()
+	currentMode := d.currentMode
+	mesh := d.mesh
+	d.mu.RUnlock()
+	if currentMode.IncludesWGCP0() {
+		// Tear DNS down before the tunnel — the host should stop trying to
+		// use the wg-cp0 resolver before the route to it disappears.
+		if err := d.dnsAdapter.Restore(ctx); err != nil {
+			d.logf("dns adapter restore failed (non-fatal): %v", err)
+		}
+		if err := d.manager.Disconnect(ctx); err != nil {
+			return err
+		}
+		d.logf("wg-cp0 down")
 	}
-	if err := d.manager.Disconnect(ctx); err != nil {
-		return err
+	if currentMode.IncludesNetbird() && mesh != nil {
+		if err := mesh.Disconnect(ctx); err != nil {
+			return err
+		}
+		d.logf("inner-mesh down")
 	}
-	d.logf("tunnel down")
 	return nil
+}
+
+// meshConfigFromBundle is a thin shim until Worker A's Block 76N defines
+// the inner-mesh bundle fields. Today the bundle does not carry setup
+// data; the Fake accepts any config and the real implementation will
+// wire this when the bundle schema extends.
+func meshConfigFromBundle(b *bundle.EnrollmentBundle) innermesh.Config {
+	cfg := innermesh.Config{}
+	// When the v0.2 bundle extension lands, populate cfg from b.
+	_ = b
+	return cfg
 }
 
 // GetDiagnostics returns the rolling log buffer + bookkeeping.

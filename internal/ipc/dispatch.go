@@ -124,6 +124,17 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 	case MethodGetDiagnostics:
 		out, err := d.h.GetDiagnostics(ctx)
 		fillResult(&resp, out, err)
+	case MethodGetMode:
+		out, err := d.h.GetMode(ctx)
+		fillResult(&resp, out, err)
+	case MethodSetMode:
+		var p SetModeRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.SetMode(ctx, p)
+		fillResult(&resp, out, err)
 	default:
 		resp.Error = &rpcError{Code: errCodeMethodNotFound, Message: ErrUnknownMethod.Error()}
 	}
@@ -138,7 +149,7 @@ func (d *Dispatcher) authorizedForMutate() bool {
 
 func isMutating(m Method) bool {
 	switch m {
-	case MethodImportBundle, MethodConnect, MethodDisconnect:
+	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode:
 		return true
 	}
 	return false

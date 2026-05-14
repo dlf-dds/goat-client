@@ -43,6 +43,8 @@ const (
 	MethodConnect         Method = "connect"
 	MethodDisconnect      Method = "disconnect"
 	MethodGetDiagnostics  Method = "getDiagnostics"
+	MethodGetMode         Method = "getMode"
+	MethodSetMode         Method = "setMode"
 )
 
 // ImportBundleRequest carries the raw CBOR bundle bytes from the GUI to the
@@ -81,18 +83,57 @@ const (
 
 // StatusReply is what `getStatus` returns. Used by the GUI to drive the
 // tray icon (green/amber/red) and the status pane.
+//
+// v0.2: StatusReply now carries Mode + an optional InnerMesh sub-status.
+// In wg-cp0-only mode InnerMesh is nil; in netbird-only mode the outer
+// State (formerly the wg-cp0 state) reads as WireStateDisconnected and
+// the GUI renders the inner-mesh card instead; in combined mode both
+// the outer State + the InnerMesh sub-status are populated and the GUI
+// stacks two cards.
 type StatusReply struct {
-	State            TunnelState `json:"state"`
-	BundleLoaded     bool        `json:"bundleLoaded"`
-	DeviceID         string      `json:"deviceID,omitempty"`
-	Site             string      `json:"site,omitempty"`
-	BundleExpiresAt  time.Time   `json:"bundleExpiresAt,omitempty"`
-	PeerPubkey       []byte      `json:"peerPubkey,omitempty"`
-	LastHandshake    time.Time   `json:"lastHandshake,omitempty"`
-	BytesIn          uint64      `json:"bytesIn"`
-	BytesOut         uint64      `json:"bytesOut"`
-	ConfiguredEndpoints []string `json:"configuredEndpoints,omitempty"`
-	ErrorMessage     string      `json:"errorMessage,omitempty"`
+	Mode             string        `json:"mode,omitempty"`
+	State            TunnelState   `json:"state"`
+	BundleLoaded     bool          `json:"bundleLoaded"`
+	DeviceID         string        `json:"deviceID,omitempty"`
+	Site             string        `json:"site,omitempty"`
+	BundleExpiresAt  time.Time     `json:"bundleExpiresAt,omitempty"`
+	PeerPubkey       []byte        `json:"peerPubkey,omitempty"`
+	LastHandshake    time.Time     `json:"lastHandshake,omitempty"`
+	BytesIn          uint64        `json:"bytesIn"`
+	BytesOut         uint64        `json:"bytesOut"`
+	ConfiguredEndpoints []string   `json:"configuredEndpoints,omitempty"`
+	ErrorMessage     string        `json:"errorMessage,omitempty"`
+	InnerMesh        *InnerMeshSnapshot `json:"innerMesh,omitempty"`
+}
+
+// InnerMeshSnapshot is the inner-mesh subsystem's status surface. Mirrors
+// the wg-cp0 outer fields the GUI already renders, so combined-mode can
+// reuse the same status-card shape twice.
+type InnerMeshSnapshot struct {
+	State         TunnelState `json:"state"`
+	PeerCount     int         `json:"peerCount"`
+	BytesIn       uint64      `json:"bytesIn"`
+	BytesOut      uint64      `json:"bytesOut"`
+	LastHandshake time.Time   `json:"lastHandshake,omitempty"`
+}
+
+// GetModeReply / SetModeRequest / SetModeReply carry the v0.2 mode
+// selector. SetMode rejects unknown modes via ErrUnknownMode.
+type GetModeReply struct {
+	Mode string `json:"mode"`
+}
+
+type SetModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+type SetModeReply struct {
+	// PreviousMode is the mode the daemon was in before the switch — the
+	// GUI uses this to log a clean diff and to roll back if the new mode
+	// fails to bring its subsystems up.
+	PreviousMode string `json:"previousMode"`
+	// Mode is the new active mode.
+	Mode string `json:"mode"`
 }
 
 // EmptyRequest / EmptyReply are placeholders for methods that take or
@@ -121,6 +162,8 @@ type Handler interface {
 	Connect(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	GetDiagnostics(ctx context.Context) (DiagnosticsReply, error)
+	GetMode(ctx context.Context) (GetModeReply, error)
+	SetMode(ctx context.Context, req SetModeRequest) (SetModeReply, error)
 }
 
 // PeerCreds carries the OS-level credentials the transport authenticated
