@@ -8,8 +8,11 @@
 >
 > **Status.** Desktop column landed by Worker B in PR #37. Mobile
 > column landed by Worker C in PR #36 against the iOS
-> NEPacketTunnelProvider + Android VpnService shells. Both columns are
-> live; the open-coordination items in §9 track the residual gaps.
+> NEPacketTunnelProvider + Android VpnService shells; gomobile SDK
+> bridge for `BundleCapabilities` + `SetMode`/`GetMode` + v0.2 status
+> JSON landed in PR #40. Both columns are live; the open-coordination
+> items in §9 track the residual gaps, and §10 enumerates the
+> verdict-gate gap as of 2026-05-15.
 
 ## 1. IPC surface
 
@@ -22,10 +25,10 @@ facade in `mobile/{ios,android}/GoatClientSDK/`.
 | Method            | Desktop (goat-clientd)        | Mobile (gomobile facade)        |
 |-------------------|-------------------------------|---------------------------------|
 | `importBundle`    | ✅ landed at v0.1.0           | ✅ `GoatClientSDKClient.importBundle` (iOS) / `Client.importBundle` (Android); same `internal/bundle.Unmarshal` + `internal/trustanchor.Verify` path |
-| `getStatus`       | ✅ v0.2 carries Mode + InnerMesh | ⚠ v0.1.x JSON shape today (`state` / `reason` / `since` / `bundleSum` / `deviceName`); Mode + InnerMesh fields need to be added to the gomobile facade's `getTunnelStatus` JSON to match the desktop `StatusInfo` schema — tracked in §9 |
+| `getStatus`       | ✅ v0.2 carries Mode + InnerMesh | ✅ v0.2 JSON shape landed in PR #40: `{state, mode, bundle_imported, inner_mesh:{state, peer_count, bytes_in, bytes_out}}` — see `capsJSON` + `Status()` in `mobile/{ios,android}/GoatClientSDK/client*.go`. Inner-mesh `peer_count` + bytes are zero-valued until 76N's `Mesh.Stats()` is wired through the facade (iteration-3 follow-up; tracked in §9) |
 | `connect`         | ✅ mode-aware (PR #37)        | ✅ mode-aware via `startVPNTunnel` (iOS) / `ACTION_START` (Android); extension reads `ModeStore` on each start and dispatches per-mode |
 | `disconnect`      | ✅ mode-aware (PR #37)        | ✅ `stopVPNTunnel` / `ACTION_STOP` — idempotent |
-| `getDiagnostics`  | ✅ v0.1.0                     | ⚠ log path exists (`<AppGroup>/packet-tunnel.log` on iOS; `Context.filesDir/goat-client.log` on Android) but no gomobile method yet — tracked in §9 |
+| `getDiagnostics`  | ✅ v0.1.0                     | ⚠ log path exists (`<AppGroup>/packet-tunnel.log` on iOS; `Context.filesDir/goat-client.log` on Android) but no `GetLogs(tail)` gomobile method yet — tracked in §9, depends on 76N `Mesh.Logs(tail)` being surfaced through the facade |
 | `getMode`         | ✅ NEW v0.2 (PR #37)          | ✅ `ModeStore.read` (Swift/Kotlin); same canonical kebab-case raw values as the daemon |
 | `setMode`         | ✅ NEW v0.2 (PR #37)          | ✅ `ModeStore.write` + tunnel restart when currently up |
 
@@ -214,21 +217,70 @@ The 76Q verdict gate is:
 - [x] **Worker C:** confirm `bundle.cbor` mobile-import flow honours
       v0.2 mode-config — yes; post-import the UI auto-clamps the stored
       mode to whatever the bundle's available-modes contains.
-- [ ] **Worker C → Worker A:** gomobile facade needs a
-      `BundleCapabilities()` method (returns JSON `{"wg_cp0": bool,
-      "inner_mesh": bool}`) so the Swift / Kotlin `BundleCapabilities`
-      structs feed off the bundle parse instead of hardcoded
-      `(true, false)` — small follow-up after 76N's `HasWgCp0()` /
-      `HasInnerMesh()` helpers reach origin/main.
-- [ ] **Worker C → Worker A:** gomobile `getTunnelStatus` JSON schema
-      needs to grow `Mode` + `InnerMesh` blocks to match
-      `internal/ipc.StatusInfo` — small follow-up after 76N IPC types
-      land.
-- [ ] **Worker A:** `internal/innermesh.Mesh` interface ships as
-      drafted in `INTERFACE.md`; `NewNetbirdLibrary` factory is the
-      callsite for both desktop combined mode and mobile combined /
-      netbird-only modes.
-- [ ] **Operator:** procure Apple Developer Program + Google Play
-      developer account so the mobile real-device verdict-gate rows
-      (TestFlight + Play Internal acceptance) can close. HANDOFF
-      v0.1.1 follow-up item 6.
+- [x] **Worker C → Worker A:** gomobile facade `BundleCapabilities()`
+      method — landed in PR #40 returning JSON
+      `{"wg_cp0": bool, "inner_mesh": bool, "has_mobile_cert": bool}`
+      (superset of the original spec; `has_mobile_cert` signals Block
+      80 crutch-tier readiness for the current bundle). The Swift /
+      Kotlin `BundleCapabilities` structs feed off the bundle parse via
+      this method.
+- [x] **Worker C → Worker A:** gomobile `getTunnelStatus` JSON schema
+      — landed in PR #40. Status now carries
+      `{state, mode, bundle_imported, inner_mesh:{state, peer_count, bytes_in, bytes_out}}`.
+      Inner-mesh sub-struct is non-null whenever the mode includes the
+      inner leg; counters are zero until 76N's `Mesh.Stats()` is wired
+      through the facade (see next item).
+- [ ] **Worker A:** `internal/innermesh.Mesh` interface is frozen
+      (`INTERFACE.md`, PR #39). `Netbird` skeleton exists
+      (`internal/innermesh/netbird.go`, PR #41 M0+M1). Fake mgmt + fake
+      signal landed (PR #43 M2). **Remaining: UNSTRIP M3-M5 per
+      `internal/innermesh/UNSTRIP.md`** — wire real Login/Sync against
+      a live mgmt-API in `Netbird.Connect`; pass three headless smokes
+      (`make smoke-modes`); flip `innermesh.New()` from `NewFake()` to
+      `NewNetbird()`. Until M5 lands, `combined` mode's inner leg is a
+      no-traffic Fake on both desktop and mobile — which means the
+      mobile (c) verdict-gate cannot close. **Load-bearing for v0.2
+      ship.**
+- [x] **Operator:** Apple Developer Program + Google Play developer
+      account — procured. Release-signing pipelines landed in PR #44;
+      iOS TestFlight signing unblocked in PR #46; Apple ASC API client
+      + tester CLI landed in PR #47. **Remaining operator-fired work:**
+      run a TestFlight build through review acceptance + run a Play
+      Internal-track build through review acceptance (verdict-gate g).
+- [ ] **Operator + trunk substrate:** Block 80 public mTLS crutch tier
+      (ADR 0843) is not yet live in production. Implementation-plan
+      rows 80A–80H carry no ✅ markers as of 2026-05-15; trunk
+      active-work shows only design-amendment activity in flight.
+      **Verdict-gate (d) — `netbird-only` mode with mgmt-API reach
+      over Block 80 — is blocked until the substrate stands up.**
+      Per the v0.2 mobile prompt, this blocker is escalated upstream
+      to whoever owns trunk substrate; goat-client 76Q ships its side
+      of the contract (mobile-cert plumbing in `BundleCapabilities`,
+      mode-aware dispatch in PacketTunnelProvider / VpnService) and
+      waits.
+
+## 10. v0.2 verdict-gate gap (snapshot 2026-05-15)
+
+The ADR 0840 §"Verdict gate (revised)" seven-of-seven gate — (a)
+regression bar, (b) desktop combined ×3, (c) mobile combined ×2, (d)
+netbird-only ×2 over Block 80, (e) headless on a single-Orin site,
+(f) parity audit (this doc), (g) TestFlight + Play Internal presence
+— has three load-bearing dependencies that 76Q's code surface does
+NOT control:
+
+| Dependency | Owner | Blocks |
+|---|---|---|
+| **76N UNSTRIP M3-M5** (real netbird inner-mesh impl + `New()` flip) | Worker A on goat-client | (b), (c), (d), (e) — every gate that exercises the inner leg with real traffic |
+| **Block 80 crutch substrate** (ADR 0843; trunk 80A-80H) | Trunk substrate owner | (d) only |
+| **Real-device testing + TestFlight + Play Internal submission** | Operator | (c), (g) |
+
+76Q's deliverables are complete for the items that don't depend on
+the above: mobile UI surface, mode-aware tunnel dispatch, bundle
+capability detection, persistence, release-signing pipelines, ASC
+upload tooling. When M5 lands, the inner-leg traffic flows through
+the same dispatch already wired in PR #36 + #40; no additional 76Q
+code change is expected on the (b)/(c) closure path. Block 80
+landing flips the `has_mobile_cert` capability into a live mgmt-API
+reach without a 76Q code change either — the cert is already
+consumed via the existing `MobileCert` field on `innermesh.Config`
+(`internal/innermesh/INTERFACE.md` §"Config (v0.2 canonical)").

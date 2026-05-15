@@ -170,24 +170,36 @@
 >   + Android `VpnService` running any one of the three modes inside
 >   the single system-VPN slot per platform.
 >
-> ### v0.2 mobile blockers
+> ### v0.2 mobile blockers (snapshot 2026-05-15)
 >
-> - `internal/innermesh/INTERFACE.md` not yet published — 76Q can land
->   the UI shells + mode-aware tunnel skeletons (which it has), but
->   neither `netbird-only` nor the inner half of `combined` can drive
->   real traffic until 76N's `InnerMesh.Configure` / `Up` / `Down` /
->   `Status` / `Logs` are wired through the gomobile facade. The
->   `wg-cp0-only` mode remains a clean regression of v0.1.x and is
->   the verdict-gate regression bar.
-> - Bundle-capability detection on mobile is parked on a v0.1.x
->   fallback (wg-cp0 only) until 76N adds the `inner_mesh_setup` +
->   `mobile_cert` CBOR fields. The Swift + Kotlin UI shells are
->   pre-wired to surface all three modes the moment those fields
->   land — the SDK fetch shape is the only seam to update.
-> - `netbird-only` mode's end-to-end real-device test depends on the
->   Block 80 crutch tier reaching live. Bench-env suffices for the
->   sub-task verdict gate; production-live preferred for the v0.2
->   ship gate.
+> - ~~`internal/innermesh/INTERFACE.md` not yet published~~ ✅ published
+>   in PR #39 (76N foundation).
+> - ~~Bundle-capability detection on mobile parked on v0.1.x fallback~~
+>   ✅ landed in PR #40 — gomobile facade now exposes
+>   `BundleCapabilities()` returning
+>   `{"wg_cp0": bool, "inner_mesh": bool, "has_mobile_cert": bool}`;
+>   Swift + Kotlin shells consume it via the SDK on bundle-import.
+> - **76N UNSTRIP M3-M5 still pending** — `internal/innermesh.New()`
+>   still returns `NewFake()` at `internal/innermesh/innermesh.go:138`.
+>   The `Netbird` skeleton exists (`netbird.go`, PR #41) and fake mgmt
+>   + signal landed (PR #43 M2). Until M5 flips `New()` to
+>   `NewNetbird()` (gated on M3 real-mgmt wire-up + M4 three headless
+>   smokes), `combined` + `netbird-only` modes drive no real inner-mesh
+>   traffic. Tracked at `internal/innermesh/UNSTRIP.md`. **Load-bearing
+>   for v0.2 verdict-gate items (b) (c) (d) (e).**
+> - **Block 80 crutch tier not yet live** — ADR 0843 substrate
+>   (implementation-plan rows 80A-80H) carries no ✅ markers in trunk
+>   as of 2026-05-15. Blocks v0.2 verdict-gate (d) `netbird-only` with
+>   mgmt-API reach over Block 80. Mobile side is contract-complete:
+>   `MobileCert` is plumbed through `innermesh.Config` and the SDK's
+>   `BundleCapabilities.has_mobile_cert` signals readiness. Escalated
+>   upstream to trunk substrate owner per the v0.2 mobile-closeout
+>   prompt.
+> - Real-device co-active testing (`combined` on ≥1 iOS + ≥1 Android)
+>   + TestFlight + Play Internal track submission are operator-fired.
+>   Release-signing pipelines + ASC API tooling already landed (PRs
+>   #44, #46, #47); the operator workflow to actually run a build
+>   through review is the remaining gate (g) closeout.
 >
 > ---
 >
