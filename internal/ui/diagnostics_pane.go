@@ -21,6 +21,11 @@ type diagnosticsPane struct {
 	logs     *widget.Entry
 	probeMsg *widget.Label
 	root     fyne.CanvasObject
+
+	// probeDoneForTest is a test-only sync hook. The probe goroutine
+	// signals on this channel before exiting so tests can deterministically
+	// observe widget state. Nil in production.
+	probeDoneForTest chan<- struct{}
 }
 
 func newDiagnosticsPane(client ipc.Client) *diagnosticsPane {
@@ -72,6 +77,11 @@ func (p *diagnosticsPane) runProbe() {
 	go func() {
 		// UI mutations from the probe goroutine must marshal back to
 		// the Fyne main goroutine via fyne.Do (F-108).
+		defer func() {
+			if p.probeDoneForTest != nil {
+				p.probeDoneForTest <- struct{}{}
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		d, err := p.client.GetDiagnostics(ctx)

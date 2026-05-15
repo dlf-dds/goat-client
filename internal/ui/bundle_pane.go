@@ -41,6 +41,15 @@ type bundlePane struct {
 	root fyne.CanvasObject
 
 	onApplied func(*ipc.BundleInfo)
+
+	// applyDoneForTest is a test-only sync hook. The bundle-import
+	// goroutine signals on this channel right before exiting so tests
+	// can deterministically wait for the work to complete (the race
+	// detector would otherwise flag widget reads from the test
+	// goroutine against widget writes from the apply goroutine).
+	// Production code never sets this field; the goroutine no-ops on
+	// the signal when it's nil.
+	applyDoneForTest chan<- struct{}
 }
 
 func newBundlePane(client ipc.Client) *bundlePane {
@@ -161,6 +170,11 @@ func (p *bundlePane) apply() {
 	go func() {
 		// All UI mutations below run on the import goroutine and must
 		// marshal back to the Fyne main goroutine via fyne.Do (F-108).
+		defer func() {
+			if p.applyDoneForTest != nil {
+				p.applyDoneForTest <- struct{}{}
+			}
+		}()
 		defer fyne.Do(func() { p.pickButton.Enable() })
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

@@ -40,6 +40,11 @@ type settingsPane struct {
 	// activeMode tracks the last-known daemon mode so Refresh() avoids
 	// unnecessary radio churn while the user is mid-selection.
 	activeMode string
+
+	// applyDoneForTest is a test-only sync hook. The mode-switch
+	// goroutine signals on this channel before exiting so tests can
+	// deterministically observe widget state. Nil in production.
+	applyDoneForTest chan<- struct{}
 }
 
 func newSettingsPane(client ipc.Client) *settingsPane {
@@ -137,6 +142,11 @@ func (p *settingsPane) apply() {
 	p.status.SetText("Reconnecting tunnels…")
 
 	go func() {
+		defer func() {
+			if p.applyDoneForTest != nil {
+				p.applyDoneForTest <- struct{}{}
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		prev, err := p.client.SetMode(ctx, string(target))
