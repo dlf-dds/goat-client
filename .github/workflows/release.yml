@@ -306,7 +306,7 @@ jobs:
           echo "ext=${ext}" >> "$GITHUB_OUTPUT"
           echo "dist_dir=${dist_dir}" >> "$GITHUB_OUTPUT"
 
-      - name: go test (native, CGO=1, race detector)
+      - name: go test (native, CGO=1)
         # Block 76 GAP #3: execute the full test suite on every PR for
         # each natively-executable target. Skipped on darwin/amd64 —
         # the build step above cross-compiles x86_64 Mach-O from an
@@ -314,11 +314,23 @@ jobs:
         # carry Rosetta 2 by default. The cross-compile build alone
         # is the contract for that target; the 5 remaining targets
         # exercise actual test execution.
+        #
+        # `-race` is supported by the Go toolchain on
+        # {linux,darwin,windows}/amd64, linux/arm64, and darwin/arm64,
+        # but NOT on windows/arm64 — that target falls back to a
+        # race-free run. The race detector's primary value here is
+        # the F-108 thread-safety class (Fyne widget mutations from
+        # worker goroutines), all of which is also exercised on
+        # darwin/arm64 + linux/{amd64,arm64} + windows/amd64.
         if: matrix.target.goos != 'darwin' || matrix.target.goarch != 'amd64'
         shell: bash
         run: |
           set -euo pipefail
-          go test -race -count=1 ./...
+          race_flag="-race"
+          if [ "$GOOS" = "windows" ] && [ "$GOARCH" = "arm64" ]; then
+            race_flag=""
+          fi
+          go test $race_flag -count=1 ./...
 
       - name: Pack platform archive (both binaries)
         id: pack
