@@ -2,24 +2,24 @@
 // netbird-derived layer that runs inside goat-client when the operator
 // selects `netbird-only` or `combined` mode).
 //
-// The v0.2 foundation (Block 76N, PR #39) landed the canonical
-// interface + Config shape + FromBundle helper here. PR #41 then
-// landed M0+M1 of the netbird-library un-strip: netbird.go is a
-// compile-time-clean Mesh impl backed by netbird's public
-// client/embed package. End-to-end Configure + Up against a real
-// mgmt-server is M2; three headless smoke-modes runs are M4; the
-// New() flip from NewFake to NewNetbird is M5. Until M5 lands New()
-// returns the Fake — which is enough to drive the desktop GUI's
-// mode-selector + status-pane + tray-icon surface, the headless
-// daemon's mode-reconciliation logic, and the gomobile facade
-// end-to-end.
-//
-// See INTERFACE.md for the contract and UNSTRIP.md for the M0..M6
-// milestone plan.
+// Milestones (per UNSTRIP.md): M0+M1 — netbird-library un-strip + cross-
+// platform compile (PR #41). M2 — in-process fakemgmt + fakesignal +
+// Netbird lifecycle test (PR #43). M3 — Stats/Logs during a real
+// session: trivially satisfied because embed.Options.LogOutput populates
+// the ring buffer with netbird's logrus output and client.Status()
+// drives Stats. M4 — three headless smokes
+// (internal/daemon/three_mode_smoke_test.go). M5 — this commit; New()
+// now returns *Netbird (deviceID = host hostname with a "goat-client"
+// fallback) so goat-clientd + the mobile SDKs run the real un-stripped
+// inner mesh by default. Callers that want a platform-specific device
+// name (Android Build.MODEL, iOS UIDevice.current.name) construct
+// *Netbird directly via NewNetbird(deviceID); tests inject *Fake via
+// daemon.Config.InnerMeshFactory.
 package innermesh
 
 import (
 	"context"
+	"os"
 	"time"
 )
 
@@ -132,7 +132,22 @@ type Mesh interface {
 	Close() error
 }
 
-// New constructs the canonical inner-mesh implementation. Until M5 of
-// the netbird un-strip flips this to NewNetbird (gated on the M4
-// headless smoke-modes runs), New returns the Fake. See UNSTRIP.md.
-func New() Mesh { return NewFake() }
+// New constructs the canonical inner-mesh implementation — the real
+// netbird-backed Mesh (NewNetbird). DeviceID is the host's os.Hostname,
+// falling back to "goat-client" when the hostname is unreadable or
+// empty. Side-effect-free: the embed.Client is built lazily at Connect.
+//
+// Tests that need a deterministic in-memory mesh inject *Fake via
+// daemon.Config.InnerMeshFactory (or use NewFake() directly).
+func New() Mesh { return NewNetbird(defaultDeviceID()) }
+
+// defaultDeviceID returns the host's hostname for the deviceID netbird
+// uses to register with the management plane. Falls back to
+// "goat-client" when os.Hostname errs or returns an empty string.
+func defaultDeviceID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "goat-client"
+	}
+	return host
+}

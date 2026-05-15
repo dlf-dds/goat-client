@@ -35,6 +35,22 @@ import (
 	tunneldns "github.com/dlf-dds/goat-client/internal/tunnel/dns"
 )
 
+// TunnelManager is the consumer-side surface the daemon uses to drive the
+// wg-cp0 outer tunnel. *tunnel.Manager satisfies this interface by method
+// shape; tests inject a fake (no real TUN device, no privileges required).
+//
+// Method set mirrors the calls the daemon makes on tunnel.Manager — extend
+// here when the daemon needs another method, not by reaching into the
+// tunnel package directly.
+type TunnelManager interface {
+	Configure(cfg tunnel.Config) error
+	Connect(ctx context.Context) error
+	Disconnect(ctx context.Context) error
+	Close() error
+	State() tunnel.State
+	Stats() (tunnel.Stats, error)
+}
+
 // Config wires the daemon's filesystem + IPC paths and trust set.
 type Config struct {
 	// BundlePath is where the verified bundle is persisted on disk
@@ -69,9 +85,16 @@ type Config struct {
 	InitialMode mode.Mode
 
 	// InnerMeshFactory builds the inner-mesh subsystem on demand. nil
-	// means use innermesh.New() (which today returns the Fake, until
-	// Worker A's Block 76N lands). Tests pass a fake directly.
+	// means use innermesh.New(); tests pass a custom factory to inject
+	// a Fake or a NewNetbird wired to in-process fakemgmt/fakesignal.
 	InnerMeshFactory func() innermesh.Mesh
+
+	// TunnelFactory builds the wg-cp0 outer tunnel manager. nil means
+	// use tunnel.NewManager() (the real wireguard-go-backed manager
+	// that opens a TUN device on first Connect — requires
+	// CAP_NET_ADMIN/root). Tests pass a fake that records calls and
+	// reports StateUp without touching the OS network stack.
+	TunnelFactory func() TunnelManager
 }
 
 // Daemon is the long-lived orchestrator. Safe for concurrent use by the
@@ -82,7 +105,7 @@ type Daemon struct {
 	mu             sync.RWMutex
 	currentMode    mode.Mode
 	currentBundle  *bundle.EnrollmentBundle
-	manager        *tunnel.Manager
+	manager        TunnelManager
 	mesh           innermesh.Mesh
 	dnsAdapter     tunneldns.Adapter
 	startedAt      time.Time
@@ -91,6 +114,7 @@ type Daemon struct {
 	logTail        []string
 	logIdx         int
 	meshFactory    func() innermesh.Mesh
+	tunnelFactory  func() TunnelManager
 }
 
 // New constructs a Daemon. Side-effect-free until LoadPersistedBundle /
@@ -113,6 +137,10 @@ func New(cfg Config) (*Daemon, error) {
 	if meshFactory == nil {
 		meshFactory = innermesh.New
 	}
+	tunnelFactory := cfg.TunnelFactory
+	if tunnelFactory == nil {
+		tunnelFactory = func() TunnelManager { return tunnel.NewManager() }
+	}
 	// Resolve initial mode: explicit override > config file > Default.
 	resolved := cfg.InitialMode
 	if resolved == "" && cfg.ConfigPath != "" {
@@ -129,13 +157,14 @@ func New(cfg Config) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: invalid initial mode %q", resolved)
 	}
 	d := &Daemon{
-		cfg:         cfg,
-		currentMode: resolved,
-		manager:     tunnel.NewManager(),
-		dnsAdapter:  dnsAdapter,
-		startedAt:   time.Now(),
-		logTail:     make([]string, cfg.LogTailSize),
-		meshFactory: meshFactory,
+		cfg:           cfg,
+		currentMode:   resolved,
+		manager:       tunnelFactory(),
+		dnsAdapter:    dnsAdapter,
+		startedAt:     time.Now(),
+		logTail:       make([]string, cfg.LogTailSize),
+		meshFactory:   meshFactory,
+		tunnelFactory: tunnelFactory,
 	}
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()

@@ -230,33 +230,34 @@ shape.
 
 ## Incremental milestones (this branch)
 
-1. **M0 — go.mod resolves.** `require` + `replace` wired,
-   `go mod tidy` succeeds, the netbird packages we need
-   (`client/internal/engine`, `client/internal/peer`,
-   `client/internal/management`, `client/internal/signal`)
-   resolve to the patched fork.
-2. **M1 — package compiles cross-platform.** A stub `Netbird` type
-   imports the netbird packages and compiles for the six desktop
-   targets + ios/arm64 + android/{arm64,amd64} via gomobile.
-   `NewNetbird()` constructs an engine but does not call
-   `engine.Run`.
-3. **M2 — Configure + Up work against an in-process fake mgmt-server.**
-   Brings up the engine, dials the fake mgmt, registers, joins
-   signal. The fake mgmt-server lands here (separate sub-commit).
-4. **M3 — Status + Stats + Logs populate during a real session.**
-   Wires `engine.GetStatusManager()` into `Mesh.Stats()`; wires a
-   logrus hook into the log ring buffer.
-5. **M4 — three headless smokes pass on Linux.** `wg-cp0-only` (no
-   inner mesh — regression of v0.1.x), `netbird-only` (inner mesh
-   only via fake mgmt), `combined` (both legs). `make smoke-modes`
-   runs all three.
-6. **M5 — `innermesh.New()` returns `*Netbird` instead of `*Fake`.**
-   Daemon picks up the real impl; the Fake stays exported for tests.
-7. **M6 — verdict-gate review.** Library compiles + smokes pass on
-   CI matrix. INTERFACE.md confirmation that the surface didn't
-   shift in implementation. HANDOFF blockers logged are resolved.
-
-Each milestone is a commit (or small commit cluster) on this branch.
-The branch opens a draft PR at M1 — once the library imports cleanly
-cross-platform — so CI verifies the un-strip surface even before the
-implementation drives a real session.
+1. ✅ **M0 — go.mod resolves** (PR #41). `require` + `replace` wired,
+   `go mod tidy` succeeds, the netbird packages we need resolve to
+   the patched fork.
+2. ✅ **M1 — package compiles cross-platform** (PR #41). `Netbird`
+   imports `client/embed` and compiles for the six desktop targets +
+   ios/arm64 + android/{arm64,amd64} via gomobile.
+3. ✅ **M2 — Configure + Up against an in-process fake mgmt-server**
+   (PR #43). `TestNetbird_LifecycleAgainstFakes` brings the engine
+   up, dials fakemgmt + fakesignal, then Disconnects cleanly.
+4. ✅ **M3 — Status + Stats + Logs populate during a real session.**
+   Trivially satisfied: `embed.Options.LogOutput` writes netbird's
+   logrus output into our `ringWriter` (`Logs(0)` returns 32+ lines
+   in the M4 smoke), and `client.Status()` drives `Mesh.Stats()`
+   without additional wiring. No `engine.GetStatusManager()` /
+   logrus-hook plumbing needed — the public embed surface already
+   exposes what we need.
+5. ✅ **M4 — three headless smokes pass.** `internal/daemon/three_mode_smoke_test.go`
+   exercises `wg-cp0-only` (fake tunnel only), `netbird-only` (real
+   Netbird against fakemgmt+fakesignal), and `combined` (both legs in
+   one Daemon). `make smoke-modes` runs all three. Hermetic-CI half;
+   the operator-fired `scripts/smoke-headless-three-mode.sh` covers
+   the install/systemctl-status half.
+6. ✅ **M5 — `innermesh.New()` returns `*Netbird` instead of `*Fake`.**
+   DeviceID derived from `os.Hostname()` with a `"goat-client"`
+   fallback. Daemon binary + mobile SDK call sites pick up the real
+   impl automatically; tests inject `*Fake` via
+   `daemon.Config.InnerMeshFactory`.
+7. **M6 — verdict-gate review.** Captain-fired docs sweep after merge:
+   HANDOFF blocker entries resolved, trunk in-flight.md Block 76 +
+   implementation-plan.md 76N rows updated, parity-audit doc spot-
+   checked.
