@@ -19,8 +19,10 @@ name: release
 # release path — they're a sanity net.
 #
 # `build-gui-matrix` builds BOTH `cmd/goat-clientd` AND `cmd/goat-client`
-# (the Fyne GUI) on per-OS native runners with `CGO_ENABLED=1`. Six
-# fan-out rows, each on its own runner image:
+# (the Fyne GUI) on per-OS native runners with `CGO_ENABLED=1`, then
+# executes `go test -race -count=1 ./...` natively on the same runner
+# (skipped on darwin/amd64 — cross-compiled from M1, no native x86_64
+# host). Six fan-out rows, each on its own runner image:
 #   - linux/amd64    → ubuntu-latest      (apt: Fyne X11/Wayland deps)
 #   - linux/arm64    → ubuntu-24.04-arm   (apt: same)
 #   - darwin/amd64   → macos-latest       (cross from M1 to x86_64
@@ -31,9 +33,11 @@ name: release
 #   - darwin/arm64   → macos-latest       (Apple Silicon, native)
 #   - windows/amd64  → windows-latest     (MinGW preinstalled)
 #   - windows/arm64  → windows-11-arm     (clang via MSVC build tools)
-# This matrix gates the tag-push release path. The `goat-client-*`
-# archives ship with both binaries side by side under
-# `dist/<goos>_<goarch>/`, which is the layout `packaging/` expects.
+# This matrix gates BOTH the PR-merge path (build + native test on each
+# target) and the tag-push release path (the resulting archives feed
+# checksums → cosign → release). The `goat-client-*` archives ship with
+# both binaries side by side under `dist/<goos>_<goarch>/`, which is the
+# layout `packaging/` expects.
 #
 # Why two matrices: Fyne v2.7's go-gl/glfw imports need CGO + a per-OS
 # native windowing toolchain (X11/Mesa on Linux, Cocoa/AppKit on macOS,
@@ -41,6 +45,14 @@ name: release
 # any of those. Native runners give us a real toolchain at the cost of
 # slower wall-clock; the daemon-only Linux cross-compile keeps PR
 # feedback under a minute.
+#
+# Block 76 GAP #3 (2026-05-10 engineering-quality survey vs upstream
+# netbird) called out that `go test` only ran on Linux on PRs, leaving
+# macOS + Windows regressions to surface at tag-time. The GUI matrix
+# now runs the full test suite natively on every PR, gating merge on
+# any of five exec-capable targets failing (darwin/amd64 stays
+# build-only — Rosetta on M1 isn't guaranteed on hosted runners and
+# the cross-compile build alone is the contract for that target).
 #
 # Operators verify any archive with:
 #
@@ -51,9 +63,11 @@ name: release
 #     goat-client-linux-amd64.tar.gz
 #
 # Triggers:
-#   - PR: daemon-matrix only (fast feedback). GUI matrix is opt-out by
-#     `if: github.event_name != 'pull_request'`.
-#   - push to main / tag / schedule / workflow_dispatch: both matrices.
+#   - PR: daemon-matrix + GUI-matrix (with `go test`) gate the merge.
+#     `checksums`, `package-*-smoke`, `cosign`, `release` stay opted-out
+#     to keep PR-time fast and to avoid burning Sigstore log entries on
+#     non-shipping refs.
+#   - push to main / tag / schedule / workflow_dispatch: all jobs run.
 #   - tag push goat-client-v*: cosign + GitHub Release wired in.
 
 on:
@@ -146,11 +160,11 @@ jobs:
 
   build-gui-matrix:
     name: gui ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
-    # Skip on PRs — six native-runner builds is too slow for PR-time
-    # feedback. Daemon cross-compile (above) covers PRs; full native
-    # matrix runs on every push to main, every tag, the weekly cron,
-    # and on demand via workflow_dispatch.
-    if: github.event_name != 'pull_request'
+    # Gates PR merges (Block 76 GAP #3). Six native-runner builds are
+    # slower than a single Linux build, but the only way to actually
+    # block merges on a macOS or Windows regression is to compile +
+    # test on those OSes. The `fast` job in ci.yml still runs in
+    # parallel for quick Linux feedback while this matrix completes.
     runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false
@@ -291,6 +305,20 @@ jobs:
           ls -la "$dist_dir"
           echo "ext=${ext}" >> "$GITHUB_OUTPUT"
           echo "dist_dir=${dist_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: go test (native, CGO=1, race detector)
+        # Block 76 GAP #3: execute the full test suite on every PR for
+        # each natively-executable target. Skipped on darwin/amd64 —
+        # the build step above cross-compiles x86_64 Mach-O from an
+        # Apple Silicon host, and hosted macos-latest runners don't
+        # carry Rosetta 2 by default. The cross-compile build alone
+        # is the contract for that target; the 5 remaining targets
+        # exercise actual test execution.
+        if: matrix.target.goos != 'darwin' || matrix.target.goarch != 'amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 ./...
 
       - name: Pack platform archive (both binaries)
         id: pack
