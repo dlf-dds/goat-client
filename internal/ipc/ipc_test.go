@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -13,8 +14,18 @@ import (
 
 // tempSocketPath returns a path short enough to fit in sockaddr_un.sun_path
 // on macOS (~104 bytes). t.TempDir() under /var/folders/... is too long.
+//
+// Skips on Windows: the daemon uses a named-pipe transport (see
+// internal/ipc/transport_windows.go); the tests in this file exercise
+// the Unix-socket transport only. Block 76 GAP #3 (cross-platform PR
+// gate) surfaced this gap when test execution started on Windows
+// runners — adding a parallel named-pipe test suite is tracked
+// separately.
 func tempSocketPath(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-socket transport tests; Windows uses named pipes (covered by tests/integration once added)")
+	}
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	dir, err := os.MkdirTemp("/tmp", "goat-ipc-")
