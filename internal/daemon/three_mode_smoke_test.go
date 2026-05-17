@@ -102,6 +102,16 @@ func TestThreeModeSmoke_WGCP0Only(t *testing.T) {
 
 // TestThreeModeSmoke_NetbirdOnly: inner-mesh-only, real Netbird against
 // fakemgmt+fakesignal. Wg-cp0 leg untouched.
+//
+// Intentionally no t.Parallel() here (and no t.Parallel() on
+// TestThreeModeSmoke_Combined either): embed.New mutates
+// NB_USE_NETSTACK_MODE process-globally and the netbird logrus
+// singleton isn't safe to share-init across goroutines. Adding
+// t.Parallel() to either of the netbird-touching smokes risks
+// data-race surfacing or worse, intermittent test corruption.
+// Don't "fix the missing t.Parallel()" without first proving netbird
+// embed handles concurrent New() — which it doesn't, as of the pin
+// at goat-embed-ca-2026-05.
 func TestThreeModeSmoke_NetbirdOnly(t *testing.T) {
 	if raceDetectorEnabled {
 		t.Skip("upstream netbird embed.Client connect/stop race; tracked separately")
