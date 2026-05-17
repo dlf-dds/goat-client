@@ -103,6 +103,9 @@ func TestThreeModeSmoke_WGCP0Only(t *testing.T) {
 // TestThreeModeSmoke_NetbirdOnly: inner-mesh-only, real Netbird against
 // fakemgmt+fakesignal. Wg-cp0 leg untouched.
 func TestThreeModeSmoke_NetbirdOnly(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("upstream netbird embed.Client connect/stop race; tracked separately")
+	}
 	sig, mgmtURL := startInnerMeshFakes(t)
 	_ = sig
 
@@ -179,6 +182,9 @@ func TestThreeModeSmoke_NetbirdOnly(t *testing.T) {
 // TestThreeModeSmoke_Combined: both legs active simultaneously inside
 // one Daemon. Wg-cp0 fake tunnel + real Netbird against fakemgmt.
 func TestThreeModeSmoke_Combined(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("upstream netbird embed.Client connect/stop race; tracked separately")
+	}
 	sig, mgmtURL := startInnerMeshFakes(t)
 	_ = sig
 
