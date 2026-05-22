@@ -16,9 +16,9 @@ import (
 
 // mainWindow is the goat-client GUI's primary window: a status header
 // (state indicator + label + connect/disconnect button) above tabs for
-// Bundle / Status / Settings / Diagnostics. The header reflects the
-// same state the systray icon shows; the two are kept in sync by
-// polling the daemon.
+// Bundle / Status / Profiles / Settings / Diagnostics. The header
+// reflects the same state the systray icon shows; the two are kept in
+// sync by polling the daemon.
 type mainWindow struct {
 	app    fyne.App
 	win    fyne.Window
@@ -31,6 +31,7 @@ type mainWindow struct {
 	statusPane   *statusPane
 	diagsPane    *diagnosticsPane
 	bundlePane   *bundlePane
+	profilesPane *profilesPane
 	settingsPane *settingsPane
 	tabs         *container.AppTabs
 	pollCancel   context.CancelFunc
@@ -73,10 +74,17 @@ func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
 		mw.notify.Send("Mode switched", "goat-client is now in "+newMode+".")
 		mw.statusPane.Refresh()
 	})
+	mw.profilesPane = newProfilesPane(client)
+	mw.profilesPane.SetWindow(w)
+	mw.profilesPane.SetOnChanged(func() {
+		mw.statusPane.Refresh()
+		mw.settingsPane.Refresh()
+	})
 
 	mw.tabs = container.NewAppTabs(
 		container.NewTabItem("Bundle", mw.bundlePane.Content()),
 		container.NewTabItem("Status", mw.statusPane.Content()),
+		container.NewTabItem("Profiles", mw.profilesPane.Content()),
 		container.NewTabItem("Settings", mw.settingsPane.Content()),
 		container.NewTabItem("Diagnostics", mw.diagsPane.Content()),
 	)
@@ -149,10 +157,16 @@ func (m *mainWindow) pollOnce(ctx context.Context) {
 			case 1:
 				m.statusPane.apply(st)
 			case 2:
+				// Profiles tab — fresh list each tick lets the user
+				// see external mutations (CLI add/remove, another
+				// session's actions). Cheap; lists rarely exceed
+				// a handful of entries.
+				go m.profilesPane.Refresh()
+			case 3:
 				// Settings tab; refresh radio if mode drifted from
 				// daemon's view (e.g. CLI setmode in another terminal).
 				m.settingsPane.Refresh()
-			case 3:
+			case 4:
 				m.diagsPane.Refresh()
 			}
 		}

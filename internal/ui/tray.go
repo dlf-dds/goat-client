@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -23,18 +24,27 @@ import (
 // + one Status line; combined mode shows a stacked icon + two Status
 // lines (outer wg-cp0 + inner netbird) so operators can read both legs
 // at a glance.
+//
+// v0.2 Block 76M: tray gains a Profiles submenu — one row per stored
+// profile, checkmark on the active one. Clicking a row drives
+// SetActiveProfile to switch. Replaces the netbird-stock-GUI profile
+// picker that triggers SaaS Auth0 redirects + wipes cached creds.
 type trayApp struct {
 	addr   string
 	client ipc.Client
 
-	mu        sync.Mutex
-	lastState ipc.State
-	lastInner ipc.State
-	lastMode  mode.Mode
+	mu          sync.Mutex
+	lastState   ipc.State
+	lastInner   ipc.State
+	lastMode    mode.Mode
+	profileList []ipc.ProfileInfo
+	activeSlug  string
 
 	mMode       *systray.MenuItem
 	mStatus     *systray.MenuItem
 	mInner      *systray.MenuItem
+	mProfiles   *systray.MenuItem // parent of the per-profile rows
+	profileRows []*profileRow
 	mConnect    *systray.MenuItem
 	mDisconnect *systray.MenuItem
 	mOpen       *systray.MenuItem
@@ -43,6 +53,22 @@ type trayApp struct {
 
 	pollCancel context.CancelFunc
 }
+
+// profileRow is one submenu entry. The systray library doesn't let us
+// remove items after AddSubMenuItem, so we pre-allocate a fixed pool
+// + hide/show them as the profile list changes. Pool size is the
+// max number of profiles the tray will surface; users with more
+// should use the Settings → Profiles pane.
+type profileRow struct {
+	item *systray.MenuItem
+	slug string
+	done chan struct{} // signals the click-handler goroutine to exit
+}
+
+// trayProfileRowsCap caps the number of profile rows the tray
+// pre-allocates. Bumping this is cheap (a few hidden menu items);
+// the cap exists to keep the systray's accept-loop bounded.
+const trayProfileRowsCap = 16
 
 // RunTray runs the systray loop on the calling goroutine (which MUST be
 // the main goroutine on macOS). Returns when the user picks Quit or the
@@ -70,6 +96,22 @@ func (t *trayApp) onReady() {
 	t.mInner.Disable()
 	t.mInner.Hide()
 	systray.AddSeparator()
+
+	// Profiles submenu — populated by refreshProfiles() once we
+	// poll. Hidden when the daemon has zero stored profiles (the
+	// fresh-install case before the first bundle is imported).
+	t.mProfiles = systray.AddMenuItem("Profiles", "Switch active network profile")
+	t.mProfiles.Hide()
+	t.profileRows = make([]*profileRow, trayProfileRowsCap)
+	for i := range t.profileRows {
+		item := t.mProfiles.AddSubMenuItem("", "")
+		item.Hide()
+		row := &profileRow{item: item, done: make(chan struct{})}
+		t.profileRows[i] = row
+		go t.watchProfileRow(row)
+	}
+	systray.AddSeparator()
+
 	t.mConnect = systray.AddMenuItem("Connect", "Bring the active mode's tunnels up")
 	t.mDisconnect = systray.AddMenuItem("Disconnect", "Bring the active mode's tunnels down")
 	systray.AddSeparator()
@@ -82,8 +124,47 @@ func (t *trayApp) onReady() {
 	t.startPolling()
 }
 
+// watchProfileRow runs one click-handler per pre-allocated profile
+// submenu row. The row's slug is updated by refreshProfiles when the
+// profile list changes; clicks read the current slug atomically off
+// trayApp.mu so the switch always targets the row's currently-shown
+// profile, not the one it was bound to at startup.
+func (t *trayApp) watchProfileRow(row *profileRow) {
+	for {
+		select {
+		case <-row.item.ClickedCh:
+			t.mu.Lock()
+			slug := row.slug
+			t.mu.Unlock()
+			if slug == "" {
+				continue
+			}
+			t.switchProfile(slug)
+		case <-row.done:
+			return
+		}
+	}
+}
+
+func (t *trayApp) switchProfile(slug string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	prev, _, err := t.client.SetActiveProfile(ctx, slug)
+	if err != nil {
+		log.Printf("tray: switch profile %q: %v", slug, err)
+		return
+	}
+	if prev != slug {
+		log.Printf("tray: switched profile %s → %s", prev, slug)
+	}
+	t.refresh(ctx)
+}
+
 func (t *trayApp) onExit() {
 	t.stopPolling()
+	for _, row := range t.profileRows {
+		close(row.done)
+	}
 	if t.client != nil {
 		_ = t.client.Close()
 	}
@@ -175,6 +256,7 @@ func (t *trayApp) refresh(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	t.refreshProfiles(ctx)
 	m, _ := mode.Parse(st.Mode)
 	if !m.Valid() {
 		m = mode.WGCP0Only
@@ -243,6 +325,59 @@ func (t *trayApp) refresh(ctx context.Context) {
 		} else {
 			t.mConnect.Enable()
 			t.mDisconnect.Disable()
+		}
+	}
+}
+
+// refreshProfiles polls the daemon for the current profile list and
+// rewrites the tray submenu rows in place. Hides the Profiles parent
+// when the store is empty (a fresh install with no bundle imported
+// yet). Visible-row count is capped at trayProfileRowsCap; extra
+// profiles are accessible via the Settings → Profiles pane only.
+func (t *trayApp) refreshProfiles(ctx context.Context) {
+	profiles, err := t.client.ListProfiles(ctx)
+	if err != nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(profiles) == 0 {
+		t.mProfiles.Hide()
+		t.profileList = nil
+		t.activeSlug = ""
+		for _, row := range t.profileRows {
+			row.slug = ""
+			row.item.Hide()
+		}
+		return
+	}
+	t.mProfiles.Show()
+	t.profileList = profiles
+	t.activeSlug = ""
+	for i, row := range t.profileRows {
+		if i < len(profiles) {
+			p := profiles[i]
+			label := p.Name
+			if p.Active {
+				label = "✓ " + p.Name
+				t.activeSlug = p.Slug
+			}
+			row.item.SetTitle(label)
+			row.item.SetTooltip(fmt.Sprintf("Switch to %s (mode: %s)", p.Name, p.Mode))
+			row.slug = p.Slug
+			row.item.Show()
+			// The active row is the no-op click target; disable it so
+			// the user gets visual feedback that there's nothing to
+			// click. (systray re-enables on next refresh if active
+			// changes.)
+			if p.Active {
+				row.item.Disable()
+			} else {
+				row.item.Enable()
+			}
+		} else {
+			row.slug = ""
+			row.item.Hide()
 		}
 	}
 }

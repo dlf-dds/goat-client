@@ -16,15 +16,17 @@ import (
 type stubClient struct {
 	addr string
 
-	mu     sync.Mutex
-	bundle *BundleInfo
-	status StatusInfo
-	logs   []string
-	mode   string
+	mu       sync.Mutex
+	bundle   *BundleInfo
+	status   StatusInfo
+	logs     []string
+	mode     string
+	profiles map[string]ProfileInfo // slug → info
+	active   string                 // slug
 }
 
 func newStubClient(addr string) *stubClient {
-	c := &stubClient{addr: addr, mode: "combined"}
+	c := &stubClient{addr: addr, mode: "combined", profiles: map[string]ProfileInfo{}}
 	c.status.State = StateDisconnected
 	c.status.Mode = c.mode
 	c.appendLog("stub IPC client initialised; awaiting Track A daemon")
@@ -188,6 +190,152 @@ func (c *stubClient) GetDiagnostics(ctx context.Context) (*Diagnostics, error) {
 		LastProbe: time.Now().UTC(),
 		Reachable: c.status.State == StateConnected,
 	}, nil
+}
+
+func (c *stubClient) ListProfiles(ctx context.Context) ([]ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]ProfileInfo, 0, len(c.profiles))
+	for slug, p := range c.profiles {
+		p.Active = (slug == c.active)
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (c *stubClient) AddProfile(ctx context.Context, req AddProfileRequest) (*ProfileInfo, error) {
+	if len(req.BundleBytes) == 0 {
+		return nil, errors.New("bundle is empty")
+	}
+	if req.Name == "" {
+		return nil, errors.New("name is empty")
+	}
+	slug := stubSlugify(req.Name)
+	if slug == "" {
+		return nil, errors.New("name slugifies to empty")
+	}
+	now := time.Now().UTC()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.profiles[slug]; ok && !req.Replace {
+		return nil, fmt.Errorf("profile %q already exists", slug)
+	}
+	resolvedMode := req.Mode
+	if resolvedMode == "" {
+		resolvedMode = c.mode
+	}
+	info := ProfileInfo{
+		Name:      req.Name,
+		Slug:      slug,
+		Mode:      resolvedMode,
+		DeviceID:  "stub-device",
+		Site:      "stub-site",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if prev, ok := c.profiles[slug]; ok {
+		info.CreatedAt = prev.CreatedAt
+	}
+	c.profiles[slug] = info
+	if req.SetActive {
+		c.active = slug
+	}
+	c.appendLogLocked(fmt.Sprintf("addProfile %s (mode=%s, active=%v)", slug, resolvedMode, req.SetActive))
+	return &info, nil
+}
+
+func (c *stubClient) RemoveProfile(ctx context.Context, slug string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.profiles[slug]; !ok {
+		return fmt.Errorf("profile %q not found", slug)
+	}
+	delete(c.profiles, slug)
+	if c.active == slug {
+		c.active = ""
+	}
+	c.appendLogLocked(fmt.Sprintf("removeProfile %s", slug))
+	return nil
+}
+
+func (c *stubClient) RenameProfile(ctx context.Context, slug, newName string) (*ProfileInfo, error) {
+	newSlug := stubSlugify(newName)
+	if newSlug == "" {
+		return nil, errors.New("name slugifies to empty")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.profiles[slug]
+	if !ok {
+		return nil, fmt.Errorf("profile %q not found", slug)
+	}
+	if newSlug != slug {
+		if _, exists := c.profiles[newSlug]; exists {
+			return nil, fmt.Errorf("profile %q already exists", newSlug)
+		}
+		delete(c.profiles, slug)
+		if c.active == slug {
+			c.active = newSlug
+		}
+	}
+	cur.Name = newName
+	cur.Slug = newSlug
+	cur.UpdatedAt = time.Now().UTC()
+	c.profiles[newSlug] = cur
+	c.appendLogLocked(fmt.Sprintf("renameProfile %s → %s", slug, newSlug))
+	return &cur, nil
+}
+
+func (c *stubClient) SetActiveProfile(ctx context.Context, slug string) (string, *ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.profiles[slug]
+	if !ok {
+		return "", nil, fmt.Errorf("profile %q not found", slug)
+	}
+	prev := c.active
+	c.active = slug
+	cur.Active = true
+	c.appendLogLocked(fmt.Sprintf("setActiveProfile %s → %s (stub)", prev, slug))
+	return prev, &cur, nil
+}
+
+func (c *stubClient) GetActiveProfile(ctx context.Context) (*ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == "" {
+		return nil, nil
+	}
+	cur := c.profiles[c.active]
+	cur.Active = true
+	return &cur, nil
+}
+
+// stubSlugify mirrors the production profile.Slugify shape (the stub
+// doesn't import internal/profile to avoid a cycle: stub clients are
+// the GUI-side stand-in, and the GUI doesn't need the full store).
+func stubSlugify(s string) string {
+	out := make([]rune, 0, len(s))
+	prevDash := true
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			out = append(out, r+('a'-'A'))
+			prevDash = false
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			out = append(out, r)
+			prevDash = false
+		default:
+			if !prevDash {
+				out = append(out, '-')
+				prevDash = true
+			}
+		}
+	}
+	for len(out) > 0 && out[len(out)-1] == '-' {
+		out = out[:len(out)-1]
+	}
+	return string(out)
 }
 
 func (c *stubClient) Close() error {

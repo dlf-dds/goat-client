@@ -217,6 +217,60 @@ func (c *realClient) GetDiagnostics(ctx context.Context) (*Diagnostics, error) {
 	}, nil
 }
 
+func (c *realClient) ListProfiles(ctx context.Context) ([]ProfileInfo, error) {
+	var reply ListProfilesReply
+	if err := c.rpc.call(MethodListProfiles, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		return nil, err
+	}
+	return reply.Profiles, nil
+}
+
+func (c *realClient) AddProfile(ctx context.Context, req AddProfileRequest) (*ProfileInfo, error) {
+	var reply AddProfileReply
+	if err := c.rpc.call(MethodAddProfile, req, &reply, 30*time.Second); err != nil {
+		return nil, err
+	}
+	p := reply.Profile
+	return &p, nil
+}
+
+func (c *realClient) RemoveProfile(ctx context.Context, slug string) error {
+	return c.rpc.call(MethodRemoveProfile, RemoveProfileRequest{Slug: slug}, nil, 10*time.Second)
+}
+
+func (c *realClient) RenameProfile(ctx context.Context, slug, newName string) (*ProfileInfo, error) {
+	var reply RenameProfileReply
+	if err := c.rpc.call(MethodRenameProfile, RenameProfileRequest{Slug: slug, NewName: newName}, &reply, 10*time.Second); err != nil {
+		return nil, err
+	}
+	p := reply.Profile
+	return &p, nil
+}
+
+func (c *realClient) SetActiveProfile(ctx context.Context, slug string) (string, *ProfileInfo, error) {
+	var reply SetActiveProfileReply
+	// Same 60s budget as SetMode — switching profile is a tear-down +
+	// bring-up of subsystems, and the cached-creds case must complete
+	// in <2s per the verdict gate.
+	if err := c.rpc.call(MethodSetActiveProfile, SetActiveProfileRequest{Slug: slug}, &reply, 60*time.Second); err != nil {
+		return "", nil, err
+	}
+	p := reply.Active
+	return reply.PreviousActive, &p, nil
+}
+
+func (c *realClient) GetActiveProfile(ctx context.Context) (*ProfileInfo, error) {
+	var reply GetActiveProfileReply
+	if err := c.rpc.call(MethodGetActiveProfile, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		return nil, err
+	}
+	if !reply.HasAny {
+		return nil, nil
+	}
+	p := reply.Active
+	return &p, nil
+}
+
 // mapWireState translates the wire-level TunnelState (5 values including
 // no-bundle) into the GUI-facing State (4 values). The "no-bundle"
 // case appears as Disconnected with BundleImported=false at the GUI

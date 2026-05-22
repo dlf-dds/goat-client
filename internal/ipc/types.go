@@ -107,6 +107,37 @@ type Client interface {
 	// previous mode for diff / rollback purposes.
 	SetMode(ctx context.Context, mode string) (previous string, err error)
 
+	// ListProfiles returns every profile in the daemon's store + their
+	// summary fields. The tray submenu calls this every poll tick;
+	// Settings → Profiles calls it on tab activation.
+	ListProfiles(ctx context.Context) ([]ProfileInfo, error)
+
+	// AddProfile uploads a bundle to the daemon store. mode is the
+	// per-profile mode applied when the profile becomes active;
+	// empty mode uses the daemon's current mode.
+	AddProfile(ctx context.Context, req AddProfileRequest) (*ProfileInfo, error)
+
+	// RemoveProfile deletes a profile by slug. If the slug was active,
+	// the daemon's legs come down (the GUI prompts the user to pick a
+	// new active profile, or none).
+	RemoveProfile(ctx context.Context, slug string) error
+
+	// RenameProfile changes a profile's display name (and slug, if the
+	// new name slugifies to a different identifier). Bundle bytes
+	// are untouched.
+	RenameProfile(ctx context.Context, slug, newName string) (*ProfileInfo, error)
+
+	// SetActiveProfile is the load-bearing "switch" call. Tears down
+	// the previously-active legs and brings the newly-active
+	// profile's legs up under the profile's stored mode. Returns the
+	// previous active slug so the GUI can log or roll back.
+	SetActiveProfile(ctx context.Context, slug string) (previous string, active *ProfileInfo, err error)
+
+	// GetActiveProfile returns the currently-active profile (or
+	// nil if none). Tighter polling surface than GetStatus for the
+	// tray submenu's checkmark.
+	GetActiveProfile(ctx context.Context) (*ProfileInfo, error)
+
 	// Close releases any underlying transport resources.
 	Close() error
 }

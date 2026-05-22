@@ -55,6 +55,21 @@ const (
 	MethodEnableInnerMesh         Method = "enableInnerMesh"
 	MethodDisableInnerMesh        Method = "disableInnerMesh"
 	MethodGetInnerMeshDiagnostics Method = "getInnerMeshDiagnostics"
+
+	// v0.2 multi-network methods (Block 76M). The profile store
+	// holds N bundles + a single active-profile pointer; setActive
+	// is the load-bearing "switch" call that tears down the
+	// previously-active legs and brings the newly-active profile's
+	// legs up — without re-prompting for setup keys, without
+	// triggering an OIDC redirect, with no risk of clobbering the
+	// inactive profiles' cached enrollment creds (the
+	// netbird-stock failure modes 76M was built to replace).
+	MethodListProfiles     Method = "listProfiles"
+	MethodAddProfile       Method = "addProfile"
+	MethodRemoveProfile    Method = "removeProfile"
+	MethodRenameProfile    Method = "renameProfile"
+	MethodSetActiveProfile Method = "setActiveProfile"
+	MethodGetActiveProfile Method = "getActiveProfile"
 )
 
 // ImportBundleRequest carries the raw CBOR bundle bytes from the GUI to the
@@ -188,6 +203,98 @@ type InnerMeshPeerStats struct {
 type EmptyRequest struct{}
 type EmptyReply struct{}
 
+// ProfileInfo is the wire shape of a single profile in the multi-network
+// store. Lightweight summary fields the GUI renders in the tray submenu +
+// Settings → Profiles list without parsing the full bundle.
+type ProfileInfo struct {
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	Mode      string    `json:"mode"`
+	DeviceID  string    `json:"deviceID,omitempty"`
+	Site      string    `json:"site,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Active    bool      `json:"active"`
+}
+
+// ListProfilesReply carries the full set of stored profiles. Order is
+// stable (alphabetical by Name) so the GUI can render without an
+// extra sort.
+type ListProfilesReply struct {
+	Profiles []ProfileInfo `json:"profiles"`
+}
+
+// AddProfileRequest adds a new profile to the store. The daemon
+// signature-verifies the bundle before persistence. Mode is the
+// per-profile mode applied when this profile becomes active; if
+// unset, the daemon uses its current mode.
+//
+// SetActive=true makes the daemon immediately switch to this
+// profile after import — convenient for first-bundle-imports where
+// the user expects the tunnel to come up right away.
+type AddProfileRequest struct {
+	Name        string `json:"name"`
+	Mode        string `json:"mode,omitempty"`
+	BundleBytes []byte `json:"bundleBytes"`
+	Replace     bool   `json:"replace,omitempty"`
+	SetActive   bool   `json:"setActive,omitempty"`
+}
+
+// AddProfileReply mirrors the ProfileInfo for the freshly-added
+// profile, plus the previous active slug (if SetActive=true).
+type AddProfileReply struct {
+	Profile        ProfileInfo `json:"profile"`
+	PreviousActive string      `json:"previousActive,omitempty"`
+}
+
+// RemoveProfileRequest deletes a profile by slug. If the removed
+// profile was active, the daemon takes its legs down — the GUI
+// then prompts the user to pick a new active profile (or none).
+type RemoveProfileRequest struct {
+	Slug string `json:"slug"`
+}
+
+// RenameProfileRequest renames a profile. The new name is
+// slugified; if the resulting slug differs from the old, the
+// on-disk files are renamed atomically. The bundle bytes are
+// untouched — rename never wipes cached enrollment creds.
+type RenameProfileRequest struct {
+	Slug    string `json:"slug"`
+	NewName string `json:"newName"`
+}
+
+// RenameProfileReply returns the resulting (possibly new) slug
+// + the updated Info.
+type RenameProfileReply struct {
+	Profile ProfileInfo `json:"profile"`
+}
+
+// SetActiveProfileRequest flips the active profile. This is the
+// load-bearing "switch" call the tray submenu drives. The daemon
+// tears down the previously-active legs and brings the newly-active
+// profile's legs up under the profile's stored mode — no
+// re-enrollment, no setup-key prompt.
+type SetActiveProfileRequest struct {
+	Slug string `json:"slug"`
+}
+
+// SetActiveProfileReply names the previous + new active profile.
+// The GUI uses this for log lines + rollback if the new profile
+// fails to come up.
+type SetActiveProfileReply struct {
+	PreviousActive string      `json:"previousActive,omitempty"`
+	Active         ProfileInfo `json:"active"`
+}
+
+// GetActiveProfileReply carries the currently-active profile (or
+// Active=zero if none). Distinct from GetStatus to give the tray
+// a tighter polling surface for the menu checkmark.
+type GetActiveProfileReply struct {
+	Active ProfileInfo `json:"active"`
+	HasAny bool        `json:"hasAny"`
+}
+
 // DiagnosticsReply is what `getDiagnostics` returns. The log buffer is a
 // rolling tail (size-bounded by the daemon) so callers always get a
 // bounded payload; full WG logs live on the daemon's stderr / journal.
@@ -217,6 +324,14 @@ type Handler interface {
 	EnableInnerMesh(ctx context.Context) error
 	DisableInnerMesh(ctx context.Context) error
 	GetInnerMeshDiagnostics(ctx context.Context) (InnerMeshDiagnosticsReply, error)
+
+	// v0.2 multi-network methods (Block 76M).
+	ListProfiles(ctx context.Context) (ListProfilesReply, error)
+	AddProfile(ctx context.Context, req AddProfileRequest) (AddProfileReply, error)
+	RemoveProfile(ctx context.Context, req RemoveProfileRequest) error
+	RenameProfile(ctx context.Context, req RenameProfileRequest) (RenameProfileReply, error)
+	SetActiveProfile(ctx context.Context, req SetActiveProfileRequest) (SetActiveProfileReply, error)
+	GetActiveProfile(ctx context.Context) (GetActiveProfileReply, error)
 }
 
 // PeerCreds carries the OS-level credentials the transport authenticated

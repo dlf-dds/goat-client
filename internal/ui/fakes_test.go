@@ -40,6 +40,24 @@ type fakeClient struct {
 	getDiagsCalls int
 	getStatCalls  int
 	closeCalls    int
+
+	// v0.2 Block 76M multi-network state — seeded by tests as needed.
+	profiles            []ipc.ProfileInfo
+	listProfilesErr     error
+	addProfileReply     *ipc.ProfileInfo
+	addProfileErr       error
+	addProfileCalls     []ipc.AddProfileRequest
+	removeProfileCalls  []string
+	removeProfileErr    error
+	renameProfileCalls  []struct{ Slug, NewName string }
+	renameProfileReply  *ipc.ProfileInfo
+	renameProfileErr    error
+	setActiveCalls      []string
+	setActivePrev       string
+	setActiveReply      *ipc.ProfileInfo
+	setActiveErr        error
+	getActiveProfile    *ipc.ProfileInfo
+	getActiveProfileErr error
 }
 
 func newFakeClient() *fakeClient {
@@ -123,6 +141,65 @@ func (c *fakeClient) SetMode(_ context.Context, m string) (string, error) {
 	c.setModePrev = m
 	c.curMode = m
 	return prev, nil
+}
+
+func (c *fakeClient) ListProfiles(_ context.Context) ([]ipc.ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.listProfilesErr != nil {
+		return nil, c.listProfilesErr
+	}
+	out := make([]ipc.ProfileInfo, len(c.profiles))
+	copy(out, c.profiles)
+	return out, nil
+}
+
+func (c *fakeClient) AddProfile(_ context.Context, req ipc.AddProfileRequest) (*ipc.ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addProfileCalls = append(c.addProfileCalls, req)
+	if c.addProfileErr != nil {
+		return nil, c.addProfileErr
+	}
+	return c.addProfileReply, nil
+}
+
+func (c *fakeClient) RemoveProfile(_ context.Context, slug string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.removeProfileCalls = append(c.removeProfileCalls, slug)
+	return c.removeProfileErr
+}
+
+func (c *fakeClient) RenameProfile(_ context.Context, slug, newName string) (*ipc.ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.renameProfileCalls = append(c.renameProfileCalls, struct{ Slug, NewName string }{slug, newName})
+	if c.renameProfileErr != nil {
+		return nil, c.renameProfileErr
+	}
+	return c.renameProfileReply, nil
+}
+
+func (c *fakeClient) SetActiveProfile(_ context.Context, slug string) (string, *ipc.ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setActiveCalls = append(c.setActiveCalls, slug)
+	if c.setActiveErr != nil {
+		return "", nil, c.setActiveErr
+	}
+	prev := c.setActivePrev
+	c.setActivePrev = slug
+	return prev, c.setActiveReply, nil
+}
+
+func (c *fakeClient) GetActiveProfile(_ context.Context) (*ipc.ProfileInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.getActiveProfileErr != nil {
+		return nil, c.getActiveProfileErr
+	}
+	return c.getActiveProfile, nil
 }
 
 func (c *fakeClient) Close() error {

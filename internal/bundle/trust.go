@@ -58,6 +58,28 @@ func NewTrustRoots(keys ...*ecdsa.PublicKey) (*TrustRoots, error) {
 	return tr, nil
 }
 
+// Add appends a P-256 public key to an existing TrustRoots set.
+// Returns the same curve / nil validation errors as NewTrustRoots.
+//
+// Mostly useful for test scaffolding (multi-bundle tests minting a
+// fresh key per bundle); production trust sets are constructed once
+// at daemon start-up via NewTrustRoots / LoadTrustRootsFromFile.
+// Not safe for concurrent use; callers serialize.
+func (tr *TrustRoots) Add(k *ecdsa.PublicKey) error {
+	if k == nil {
+		return fmt.Errorf("trust root: nil public key")
+	}
+	if k.Curve == nil || k.Curve.Params().Name != elliptic.P256().Params().Name {
+		got := "nil"
+		if k.Curve != nil {
+			got = k.Curve.Params().Name
+		}
+		return fmt.Errorf("trust root: curve is %s, want P-256", got)
+	}
+	tr.keys = append(tr.keys, k)
+	return nil
+}
+
 // LoadTrustRootsFromFile reads a PEM file containing one or more
 // `PUBLIC KEY` or `CERTIFICATE` blocks and returns the TrustRoots they
 // encode. Each block must carry an ECDSA P-256 key.

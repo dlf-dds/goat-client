@@ -139,6 +139,25 @@ func (f *fakeHandler) GetInnerMeshDiagnostics(ctx context.Context) (InnerMeshDia
 	return f.innerDiagnosticsReply, nil
 }
 
+// v0.2 Block 76M multi-network — minimal stubs returning zero values
+// so tests that don't exercise these can still build.
+func (f *fakeHandler) ListProfiles(context.Context) (ListProfilesReply, error) {
+	return ListProfilesReply{}, nil
+}
+func (f *fakeHandler) AddProfile(context.Context, AddProfileRequest) (AddProfileReply, error) {
+	return AddProfileReply{}, nil
+}
+func (f *fakeHandler) RemoveProfile(context.Context, RemoveProfileRequest) error { return nil }
+func (f *fakeHandler) RenameProfile(context.Context, RenameProfileRequest) (RenameProfileReply, error) {
+	return RenameProfileReply{}, nil
+}
+func (f *fakeHandler) SetActiveProfile(context.Context, SetActiveProfileRequest) (SetActiveProfileReply, error) {
+	return SetActiveProfileReply{}, nil
+}
+func (f *fakeHandler) GetActiveProfile(context.Context) (GetActiveProfileReply, error) {
+	return GetActiveProfileReply{}, nil
+}
+
 func startServer(t *testing.T, h Handler) (string, *Server) {
 	t.Helper()
 	socket := tempSocketPath(t)

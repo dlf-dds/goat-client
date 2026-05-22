@@ -175,3 +175,77 @@ func repeatByte(b byte, n int) []byte {
 	}
 	return out
 }
+
+// mintTestBundleWithRoots mints a fresh bundle whose key is added to
+// the supplied TrustRoots set. Lets multi-profile tests build N
+// bundles that all verify against the same Store-configured roots.
+//
+// The minted bundle uses a randomised DeviceID + Nonce so it doesn't
+// wire-collide with sibling bundles in the same test.
+func mintTestBundleWithRoots(t *testing.T, withWgCp0 bool, innerMeshMgmtURL string, roots *bundle.TrustRoots) testBundle {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa generate: %v", err)
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("rand nonce: %v", err)
+	}
+	deviceID := "multi-profile-device-" + string([]byte{
+		hexChar(nonce[0]), hexChar(nonce[1] >> 4), hexChar(nonce[2]), hexChar(nonce[3] >> 4),
+	})
+	now := time.Now().UTC().Truncate(time.Second)
+	b := &bundle.EnrollmentBundle{
+		Version:            bundle.Version,
+		DeviceID:           deviceID,
+		PeerPubkey:         repeatByte('p', 32),
+		ACLGroups:          []string{"multi-profile-smoke"},
+		Site:               "multi-profile-lab-" + string([]byte{hexChar(nonce[4])}),
+		IssuedAt:           now.Add(-1 * time.Hour),
+		ActivationDeadline: now.Add(72 * time.Hour),
+		ExpiresAt:          now.Add(24 * time.Hour),
+		Nonce:              nonce,
+		CAID:               "multi-profile-ca",
+	}
+	if withWgCp0 {
+		b.CPDevicePubkey = repeatByte('u', 32)
+		b.CPDevicePrivkey = repeatByte('v', 32)
+		b.CPDeviceAddress = "198.18.0.42/24"
+		b.KnownEndpoints = []bundle.KnownEndpoint{{
+			Addr:     "127.0.0.1:51820",
+			Pubkey:   repeatByte('r', 32),
+			Kind:     bundle.KindRelay,
+			MeshAddr: "198.18.0.10",
+		}}
+	}
+	if innerMeshMgmtURL != "" {
+		b.InnerMeshSetup = bundle.InnerMeshSetup{
+			ManagementURL: innerMeshMgmtURL,
+			SetupKey:      "11111111-1111-1111-1111-111111111111",
+		}
+	}
+	payload, err := b.Signable()
+	if err != nil {
+		t.Fatalf("signable: %v", err)
+	}
+	digest := sha256.Sum256(payload)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	b.Signature = sig
+	wire, err := b.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := roots.Add(&priv.PublicKey); err != nil {
+		t.Fatalf("trust roots add: %v", err)
+	}
+	return testBundle{parsed: b, bytes: wire, roots: roots}
+}
+
+func hexChar(b byte) byte {
+	const hex = "0123456789abcdef"
+	return hex[b&0xF]
+}

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,6 +30,7 @@ import (
 	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
+	"github.com/dlf-dds/goat-client/internal/profile"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
 	tunneldns "github.com/dlf-dds/goat-client/internal/tunnel/dns"
 )
@@ -53,10 +53,19 @@ type TunnelManager interface {
 
 // Config wires the daemon's filesystem + IPC paths and trust set.
 type Config struct {
-	// BundlePath is where the verified bundle is persisted on disk
-	// (mode 0600). Missing file at start-up is fine — the daemon
-	// reports StateNoBundle until importBundle is called.
+	// BundlePath is where the legacy v0.1.x single-bundle file lived
+	// (mode 0600). Read once at start-up by LoadPersistedBundle to
+	// migrate into the v0.2 profile store. Missing file is fine.
 	BundlePath string
+
+	// ProfilesDir is the v0.2 multi-network profile store directory
+	// (per-profile <slug>.cbor + <slug>.meta.json). Empty path means
+	// derive from the same parent as BundlePath.
+	ProfilesDir string
+
+	// ActiveProfilePath is the v0.2 active-marker file. Empty path
+	// means derive from the same parent as BundlePath.
+	ActiveProfilePath string
 
 	// SocketPath is the Unix-domain-socket path or Windows named-pipe
 	// name the IPC server listens on.
@@ -74,7 +83,11 @@ type Config struct {
 	// LogTailSize bounds the in-memory diagnostic log buffer.
 	LogTailSize int
 
-	// ConfigPath is the path to the persisted mode-config file (v0.2).
+	// ConfigPath is the path to the persisted mode-config file (v0.2
+	// global default — applied to the migrated "default" profile
+	// during v0.1.x → v0.2 transition only). Per-profile mode lives in
+	// the store's <slug>.meta.json, so this file is purely the
+	// fallback for first-launch + legacy migration.
 	// Missing file means use mode.Default. Empty path skips persistence
 	// (test-only).
 	ConfigPath string
@@ -102,19 +115,21 @@ type Config struct {
 type Daemon struct {
 	cfg Config
 
-	mu             sync.RWMutex
-	currentMode    mode.Mode
-	currentBundle  *bundle.EnrollmentBundle
-	manager        TunnelManager
-	mesh           innermesh.Mesh
-	dnsAdapter     tunneldns.Adapter
-	startedAt      time.Time
-	lastConnect    time.Time
-	lastErr        error
-	logTail        []string
-	logIdx         int
-	meshFactory    func() innermesh.Mesh
-	tunnelFactory  func() TunnelManager
+	mu            sync.RWMutex
+	currentMode   mode.Mode
+	currentBundle *bundle.EnrollmentBundle
+	currentSlug   string // active profile slug; "" when no profile loaded
+	manager       TunnelManager
+	mesh          innermesh.Mesh
+	dnsAdapter    tunneldns.Adapter
+	startedAt     time.Time
+	lastConnect   time.Time
+	lastErr       error
+	logTail       []string
+	logIdx        int
+	meshFactory   func() innermesh.Mesh
+	tunnelFactory func() TunnelManager
+	store         *profile.Store
 }
 
 // New constructs a Daemon. Side-effect-free until LoadPersistedBundle /
@@ -156,6 +171,26 @@ func New(cfg Config) (*Daemon, error) {
 	if !resolved.Valid() {
 		return nil, fmt.Errorf("daemon: invalid initial mode %q", resolved)
 	}
+	// Profile-store paths: default to siblings of BundlePath when
+	// caller didn't override (lets packagers + tests treat them as a
+	// single config root).
+	profilesDir := cfg.ProfilesDir
+	if profilesDir == "" {
+		profilesDir = filepath.Join(filepath.Dir(cfg.BundlePath), "profiles")
+	}
+	activePath := cfg.ActiveProfilePath
+	if activePath == "" {
+		activePath = filepath.Join(filepath.Dir(cfg.BundlePath), "active.json")
+	}
+	store, err := profile.New(profile.Config{
+		Dir:        profilesDir,
+		ActivePath: activePath,
+		TrustRoots: cfg.TrustRoots,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("profile store: %w", err)
+	}
+
 	d := &Daemon{
 		cfg:           cfg,
 		currentMode:   resolved,
@@ -165,6 +200,7 @@ func New(cfg Config) (*Daemon, error) {
 		logTail:       make([]string, cfg.LogTailSize),
 		meshFactory:   meshFactory,
 		tunnelFactory: tunnelFactory,
+		store:         store,
 	}
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()
@@ -172,42 +208,77 @@ func New(cfg Config) (*Daemon, error) {
 	return d, nil
 }
 
-// LoadPersistedBundle reads BundlePath if it exists, parses + verifies,
-// and configures the tunnel manager. Missing file is non-fatal — the
-// daemon stays in StateNoBundle until the GUI calls importBundle.
+// LoadPersistedBundle reconciles the on-disk state with the daemon
+// at start-up. Order:
+//
+//  1. If the v0.2 profile store has an active marker, load that
+//     profile and configure the tunnel from it.
+//  2. Otherwise, if a v0.1.x bundle.cbor exists at BundlePath,
+//     migrate it into the store as the "default" profile + set
+//     active. The legacy file is left in place (non-destructive
+//     migration).
+//  3. Otherwise, leave the daemon in StateNoBundle — the GUI's
+//     importBundle call lands the first profile.
+//
+// Missing files at any step are non-fatal. Bundles loaded from the
+// store are not re-verified against TrustRoots — they were verified
+// at Add time, and the on-disk bundle.cbor is treated as trusted
+// (mode 0600, owned by the daemon's uid). The legacy migration path
+// DOES re-verify, since the legacy file might pre-date a trust-root
+// rotation.
 func (d *Daemon) LoadPersistedBundle() error {
-	data, err := os.ReadFile(d.cfg.BundlePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			d.logf("no persisted bundle at %s — awaiting import", d.cfg.BundlePath)
+	// Step 1: try the profile store's active profile.
+	if active, _ := d.store.Active(); active != "" {
+		p, err := d.store.Load(active)
+		if err != nil {
+			d.logf("load active profile %q failed: %v — falling back to legacy", active, err)
+		} else {
+			d.adoptProfile(active, p)
 			return nil
 		}
-		return fmt.Errorf("read bundle: %w", err)
 	}
-	b, err := bundle.Unmarshal(data)
+	// Step 2: legacy migration.
+	slug, migrated, err := d.store.MigrateLegacyBundle(d.cfg.BundlePath, d.currentMode)
 	if err != nil {
-		return fmt.Errorf("parse bundle: %w", err)
+		d.logf("legacy bundle migration failed: %v — awaiting fresh import", err)
+		return nil
 	}
-	if d.cfg.TrustRoots != nil {
-		if err := d.cfg.TrustRoots.VerifyBundle(b); err != nil {
-			return fmt.Errorf("verify bundle: %w", err)
+	if migrated {
+		d.logf("migrated v0.1.x bundle.cbor → profile %q", slug)
+		p, err := d.store.Load(slug)
+		if err != nil {
+			d.logf("load migrated profile %q: %v", slug, err)
+			return nil
 		}
+		d.adoptProfile(slug, p)
+		return nil
 	}
-	if err := b.CheckExpiry(time.Now()); err != nil {
-		d.logf("persisted bundle expired: %v", err)
-		// Continue — operator may want to importBundle to replace it.
-	}
+	// Step 3: no bundle anywhere.
+	d.logf("no profile + no legacy bundle — awaiting import")
+	return nil
+}
+
+// adoptProfile sets d.currentBundle + d.currentSlug + d.currentMode
+// from the loaded profile and configures the outer tunnel manager.
+// Does NOT bring legs up — Connect/SetActiveProfile does that.
+func (d *Daemon) adoptProfile(slug string, p *profile.Profile) {
 	d.mu.Lock()
-	d.currentBundle = b
+	d.currentBundle = p.Bundle
+	d.currentSlug = slug
+	if p.Mode.Valid() {
+		d.currentMode = p.Mode
+	}
 	d.mu.Unlock()
-	if cfg, err := tunnel.FromBundle(b); err == nil {
+	if err := p.Bundle.CheckExpiry(time.Now()); err != nil {
+		d.logf("profile %q bundle expired: %v", slug, err)
+	}
+	if cfg, err := tunnel.FromBundle(p.Bundle); err == nil {
 		if err := d.manager.Configure(cfg); err != nil {
-			d.logf("configure tunnel: %v", err)
+			d.logf("configure tunnel for profile %q: %v", slug, err)
 		}
 	} else if !errors.Is(err, tunnel.ErrNoEndpoint) {
-		d.logf("derive tunnel config: %v", err)
+		d.logf("derive tunnel config for profile %q: %v", slug, err)
 	}
-	return nil
 }
 
 // ServeIPC binds the IPC listener and serves until ctx is cancelled.
@@ -247,7 +318,18 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 
 // --- ipc.Handler implementation ---
 
-// ImportBundle parses, verifies, persists, and configures the tunnel.
+// ImportBundle routes through the v0.2 profile store. On a fresh
+// daemon (no active profile) it creates a profile named "default"
+// and marks it active; on a daemon with an existing active profile
+// it REPLACES the active profile's bundle in place (preserving the
+// profile's Name + Mode + CreatedAt). Either way the result is the
+// same: the GUI's single-bundle import flow Just Works on a
+// single-profile install and adds capacity automatically when a
+// second AddProfile call lands.
+//
+// Multi-profile callers should use AddProfile / SetActiveProfile
+// directly — those carry the Name + Mode the user picked in the UI
+// rather than reusing the active profile's metadata.
 func (d *Daemon) ImportBundle(ctx context.Context, req ipc.ImportBundleRequest) (ipc.ImportBundleReply, error) {
 	b, err := bundle.Unmarshal(req.BundleBytes)
 	if err != nil {
@@ -265,41 +347,49 @@ func (d *Daemon) ImportBundle(ctx context.Context, req ipc.ImportBundleRequest) 
 	if err := b.CheckExpiry(time.Now()); err != nil {
 		return ipc.ImportBundleReply{}, err
 	}
-	// Persist atomically: write to a temp file in the same dir, fsync,
-	// rename. A crash before rename leaves the old bundle in place.
-	if err := os.MkdirAll(filepath.Dir(d.cfg.BundlePath), 0o700); err != nil {
-		return ipc.ImportBundleReply{}, fmt.Errorf("mkdir bundle dir: %w", err)
+
+	d.mu.RLock()
+	activeSlug := d.currentSlug
+	currentMode := d.currentMode
+	d.mu.RUnlock()
+
+	// If there's an active profile, replace its bundle in place.
+	// Otherwise create "default" and mark it active.
+	if activeSlug != "" {
+		name := activeSlug // best-effort; profile.Add re-slugifies
+		if info, err := d.profileInfoBySlug(activeSlug); err == nil {
+			name = info.Name
+			currentMode = info.Mode
+		}
+		if _, err := d.store.Add(profile.AddProfileRequest{
+			Name:        name,
+			Mode:        currentMode,
+			BundleBytes: req.BundleBytes,
+			Replace:     true,
+		}); err != nil {
+			return ipc.ImportBundleReply{}, fmt.Errorf("replace active profile: %w", err)
+		}
+		d.mu.Lock()
+		d.currentBundle = b
+		d.mu.Unlock()
+	} else {
+		info, err := d.store.Add(profile.AddProfileRequest{
+			Name:        "default",
+			Mode:        currentMode,
+			BundleBytes: req.BundleBytes,
+		})
+		if err != nil {
+			return ipc.ImportBundleReply{}, fmt.Errorf("add default profile: %w", err)
+		}
+		if _, err := d.store.SetActive(info.Slug); err != nil {
+			return ipc.ImportBundleReply{}, fmt.Errorf("set active: %w", err)
+		}
+		d.mu.Lock()
+		d.currentBundle = b
+		d.currentSlug = info.Slug
+		d.mu.Unlock()
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(d.cfg.BundlePath), ".bundle-*.tmp")
-	if err != nil {
-		return ipc.ImportBundleReply{}, fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(req.BundleBytes); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return ipc.ImportBundleReply{}, fmt.Errorf("write bundle: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return ipc.ImportBundleReply{}, fmt.Errorf("sync bundle: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return ipc.ImportBundleReply{}, fmt.Errorf("close bundle: %w", err)
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		_ = os.Remove(tmpName)
-		return ipc.ImportBundleReply{}, fmt.Errorf("chmod bundle: %w", err)
-	}
-	if err := os.Rename(tmpName, d.cfg.BundlePath); err != nil {
-		_ = os.Remove(tmpName)
-		return ipc.ImportBundleReply{}, fmt.Errorf("rename bundle: %w", err)
-	}
-	d.mu.Lock()
-	d.currentBundle = b
-	d.mu.Unlock()
+
 	if cfg, err := tunnel.FromBundle(b); err == nil {
 		if err := d.manager.Configure(cfg); err != nil {
 			d.logf("configure tunnel: %v", err)
@@ -316,6 +406,24 @@ func (d *Daemon) ImportBundle(ctx context.Context, req ipc.ImportBundleRequest) 
 		EndpointsCount: len(b.KnownEndpoints),
 		HasCPDeviceKey: len(b.CPDevicePubkey) == 32,
 	}, nil
+}
+
+// profileInfoBySlug is a small helper used by ImportBundle's
+// "replace active profile" path to recover the active profile's
+// Name + Mode without reparsing its bundle. Returns the bare Info
+// (Active flag may be stale relative to a concurrent SetActive
+// call — caller doesn't care).
+func (d *Daemon) profileInfoBySlug(slug string) (profile.Info, error) {
+	all, err := d.store.List()
+	if err != nil {
+		return profile.Info{}, err
+	}
+	for _, info := range all {
+		if info.Slug == slug {
+			return info, nil
+		}
+	}
+	return profile.Info{}, fmt.Errorf("%w: %s", profile.ErrNotFound, slug)
 }
 
 // GetStatus reports the current tunnel + bundle state.
@@ -461,10 +569,22 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 		}
 	}
 
-	// Persist for next start-up.
+	// Persist on the active profile's meta.json — this is the v0.2
+	// per-profile mode source of truth.
+	d.mu.RLock()
+	slug := d.currentSlug
+	d.mu.RUnlock()
+	if slug != "" {
+		if err := d.store.UpdateMode(slug, newMode); err != nil {
+			d.logf("setMode persist (profile %q): %v", slug, err)
+		}
+	}
+	// Also keep the legacy ConfigPath in sync for back-compat with the
+	// install-time --mode flag flow (next start-up's fallback when
+	// the store is empty).
 	if d.cfg.ConfigPath != "" {
 		if err := mode.Save(d.cfg.ConfigPath, mode.PersistedConfig{Mode: newMode}); err != nil {
-			d.logf("setMode persist: %v", err)
+			d.logf("setMode persist legacy: %v", err)
 		}
 	}
 	d.logf("setMode complete: now %s", newMode)
@@ -739,6 +859,311 @@ func (d *Daemon) logf(format string, args ...interface{}) {
 	d.logIdx = (d.logIdx + 1) % d.cfg.LogTailSize
 	d.mu.Unlock()
 	log.Print(strings.TrimSpace(line))
+}
+
+// --- Block 76M multi-network IPC methods ---
+
+// ListProfiles returns every stored profile.
+func (d *Daemon) ListProfiles(_ context.Context) (ipc.ListProfilesReply, error) {
+	infos, err := d.store.List()
+	if err != nil {
+		return ipc.ListProfilesReply{}, fmt.Errorf("list profiles: %w", err)
+	}
+	out := make([]ipc.ProfileInfo, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, toIPCProfileInfo(info))
+	}
+	return ipc.ListProfilesReply{Profiles: out}, nil
+}
+
+// AddProfile adds a profile to the store. If SetActive is true the
+// daemon switches to it after import — same reconcile-during-switch
+// path as SetActiveProfile.
+func (d *Daemon) AddProfile(ctx context.Context, req ipc.AddProfileRequest) (ipc.AddProfileReply, error) {
+	resolvedMode := mode.Default
+	if req.Mode != "" {
+		m, err := mode.Parse(req.Mode)
+		if err != nil {
+			return ipc.AddProfileReply{}, err
+		}
+		resolvedMode = m
+	} else {
+		d.mu.RLock()
+		resolvedMode = d.currentMode
+		d.mu.RUnlock()
+	}
+	info, err := d.store.Add(profile.AddProfileRequest{
+		Name:        req.Name,
+		Mode:        resolvedMode,
+		BundleBytes: req.BundleBytes,
+		Replace:     req.Replace,
+	})
+	if err != nil {
+		return ipc.AddProfileReply{}, err
+	}
+	reply := ipc.AddProfileReply{Profile: toIPCProfileInfo(info)}
+	if req.SetActive {
+		prev, err := d.setActiveLocked(ctx, info.Slug)
+		if err != nil {
+			return reply, fmt.Errorf("set active after add: %w", err)
+		}
+		reply.PreviousActive = prev
+		reply.Profile.Active = true
+	}
+	return reply, nil
+}
+
+// RemoveProfile deletes a profile. If it was active, takes the
+// daemon's legs down (the GUI then prompts for a new active).
+func (d *Daemon) RemoveProfile(ctx context.Context, req ipc.RemoveProfileRequest) error {
+	d.mu.RLock()
+	activeSlug := d.currentSlug
+	d.mu.RUnlock()
+	if req.Slug == activeSlug {
+		if err := d.tearDownAll(ctx); err != nil {
+			d.logf("removeProfile teardown failed: %v", err)
+		}
+		d.mu.Lock()
+		d.currentBundle = nil
+		d.currentSlug = ""
+		d.mu.Unlock()
+	}
+	if err := d.store.Remove(req.Slug); err != nil {
+		return err
+	}
+	d.logf("profile %q removed", req.Slug)
+	return nil
+}
+
+// RenameProfile renames a profile. Bundle bytes survive intact.
+func (d *Daemon) RenameProfile(_ context.Context, req ipc.RenameProfileRequest) (ipc.RenameProfileReply, error) {
+	info, err := d.store.Rename(req.Slug, req.NewName)
+	if err != nil {
+		return ipc.RenameProfileReply{}, err
+	}
+	// If the renamed profile was active, update the daemon's
+	// currentSlug to track the new slug.
+	d.mu.RLock()
+	activeSlug := d.currentSlug
+	d.mu.RUnlock()
+	if activeSlug == req.Slug {
+		d.mu.Lock()
+		d.currentSlug = info.Slug
+		d.mu.Unlock()
+	}
+	d.logf("profile %q renamed → slug=%q name=%q", req.Slug, info.Slug, info.Name)
+	return ipc.RenameProfileReply{Profile: toIPCProfileInfo(info)}, nil
+}
+
+// SetActiveProfile is the load-bearing switch. Tears down the
+// currently-active legs, swaps in the target profile's bundle +
+// mode, and brings the new legs up. The Fake-mesh case completes
+// in <2s per the 76M verdict gate; the real-Netbird case is
+// dominated by mgmt-API round-trip and pays a longer tail.
+func (d *Daemon) SetActiveProfile(ctx context.Context, req ipc.SetActiveProfileRequest) (ipc.SetActiveProfileReply, error) {
+	if req.Slug == "" {
+		return ipc.SetActiveProfileReply{}, errors.New("setActiveProfile: slug required")
+	}
+	prev, err := d.setActiveLocked(ctx, req.Slug)
+	if err != nil {
+		return ipc.SetActiveProfileReply{}, err
+	}
+	info, err := d.profileInfoBySlug(req.Slug)
+	if err != nil {
+		return ipc.SetActiveProfileReply{}, err
+	}
+	info.Active = true
+	return ipc.SetActiveProfileReply{
+		PreviousActive: prev,
+		Active:         toIPCProfileInfo(info),
+	}, nil
+}
+
+// GetActiveProfile returns the active profile + a HasAny flag the
+// GUI uses to render "import a bundle to get started" when the
+// store is empty.
+func (d *Daemon) GetActiveProfile(_ context.Context) (ipc.GetActiveProfileReply, error) {
+	d.mu.RLock()
+	slug := d.currentSlug
+	d.mu.RUnlock()
+	infos, err := d.store.List()
+	if err != nil {
+		return ipc.GetActiveProfileReply{}, err
+	}
+	reply := ipc.GetActiveProfileReply{HasAny: len(infos) > 0}
+	if slug == "" {
+		return reply, nil
+	}
+	for _, info := range infos {
+		if info.Slug == slug {
+			info.Active = true
+			reply.Active = toIPCProfileInfo(info)
+			return reply, nil
+		}
+	}
+	return reply, nil
+}
+
+// setActiveLocked is the daemon-side switch implementation shared
+// by SetActiveProfile + AddProfile{SetActive: true}. Returns the
+// previous active slug. Order of operations:
+//
+//   1. Load target profile (parses + adopts bundle bytes).
+//   2. Tear down all currently-running legs (DNS, outer, inner mesh).
+//   3. Adopt the new bundle + mode + slug atomically.
+//   4. Bring the new mode's legs up (best-effort; per-leg errors
+//      surface via Diagnostics).
+//   5. Write active.json LAST — a crash mid-bring-up leaves the
+//      previous active marker so the next start-up picks a profile
+//      whose state we already know.
+func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, error) {
+	target, err := d.store.Load(slug)
+	if err != nil {
+		return "", err
+	}
+
+	d.mu.RLock()
+	prev := d.currentSlug
+	prevMode := d.currentMode
+	d.mu.RUnlock()
+
+	// Step 2: tear down whatever was running.
+	if prev != "" {
+		if err := d.tearDownMode(ctx, prevMode); err != nil {
+			d.logf("setActiveProfile teardown failed: %v", err)
+		}
+	}
+
+	// Step 3: adopt new bundle + mode.
+	newMode := target.Mode
+	if !newMode.Valid() {
+		newMode = mode.Default
+	}
+	d.mu.Lock()
+	d.currentBundle = target.Bundle
+	d.currentMode = newMode
+	d.currentSlug = slug
+	// Recreate the mesh if we're entering inner-mesh territory and
+	// the previous mode didn't carry one (or vice versa). Mirrors
+	// SetMode's reconcile path.
+	if newMode.IncludesNetbird() && d.mesh == nil {
+		d.mesh = d.meshFactory()
+	}
+	if !newMode.IncludesNetbird() && d.mesh != nil {
+		// Old mesh handle is gone after teardown above; nil out the
+		// pointer so the next Connect/SetActive that re-enters
+		// inner-mesh territory creates a fresh one.
+		d.mesh = nil
+	}
+	mesh := d.mesh
+	d.mu.Unlock()
+
+	// Step 4: bring legs up.
+	if cfg, err := tunnel.FromBundle(target.Bundle); err == nil {
+		if err := d.manager.Configure(cfg); err != nil {
+			d.logf("setActiveProfile configure: %v", err)
+		}
+		if newMode.IncludesWGCP0() {
+			if err := d.manager.Connect(ctx); err != nil {
+				d.logf("setActiveProfile wg-cp0 up: %v", err)
+			} else {
+				dnsCfg := tunneldns.Config{
+					Nameservers:   cfg.DNSServers,
+					SearchDomains: cfg.SearchDomains,
+					MatchDomains:  cfg.MatchDomains,
+				}
+				if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
+					d.logf("setActiveProfile dns apply: %v", err)
+				}
+			}
+		}
+	} else if !errors.Is(err, tunnel.ErrNoEndpoint) {
+		d.logf("setActiveProfile derive tunnel: %v", err)
+	}
+	if newMode.IncludesNetbird() && mesh != nil {
+		if err := mesh.Configure(meshConfigFromBundle(target.Bundle)); err != nil {
+			d.logf("setActiveProfile mesh configure: %v", err)
+		}
+		if err := mesh.Connect(ctx); err != nil {
+			d.logf("setActiveProfile mesh up: %v", err)
+		}
+	}
+
+	// Step 5: persist active marker last.
+	if _, err := d.store.SetActive(slug); err != nil {
+		d.logf("setActiveProfile persist marker: %v", err)
+	}
+	d.mu.Lock()
+	d.lastConnect = time.Now()
+	d.lastErr = nil
+	d.mu.Unlock()
+	d.logf("setActiveProfile complete: %s → %s (mode=%s)", prev, slug, newMode)
+	return prev, nil
+}
+
+// tearDownMode brings down whichever legs the given mode includes.
+// Idempotent; ignores per-leg errors past the first log line.
+func (d *Daemon) tearDownMode(ctx context.Context, m mode.Mode) error {
+	if m.IncludesWGCP0() {
+		_ = d.dnsAdapter.Restore(ctx)
+		if err := d.manager.Disconnect(ctx); err != nil {
+			d.logf("teardown wg-cp0: %v", err)
+		}
+	}
+	if m.IncludesNetbird() {
+		d.mu.Lock()
+		mesh := d.mesh
+		d.mesh = nil
+		d.mu.Unlock()
+		if mesh != nil {
+			if err := mesh.Disconnect(ctx); err != nil {
+				d.logf("teardown mesh disconnect: %v", err)
+			}
+			if err := mesh.Close(); err != nil {
+				d.logf("teardown mesh close: %v", err)
+			}
+		}
+	}
+	return nil
+}
+
+// tearDownAll tears down both legs regardless of the daemon's
+// current mode — used by RemoveProfile when removing the active
+// profile (the legs must come down even if the user later picks a
+// different mode).
+func (d *Daemon) tearDownAll(ctx context.Context) error {
+	_ = d.dnsAdapter.Restore(ctx)
+	if err := d.manager.Disconnect(ctx); err != nil {
+		d.logf("tearDownAll wg-cp0: %v", err)
+	}
+	d.mu.Lock()
+	mesh := d.mesh
+	d.mesh = nil
+	d.mu.Unlock()
+	if mesh != nil {
+		if err := mesh.Disconnect(ctx); err != nil {
+			d.logf("tearDownAll mesh disconnect: %v", err)
+		}
+		if err := mesh.Close(); err != nil {
+			d.logf("tearDownAll mesh close: %v", err)
+		}
+	}
+	return nil
+}
+
+// toIPCProfileInfo converts the store's Info to the IPC wire shape.
+func toIPCProfileInfo(in profile.Info) ipc.ProfileInfo {
+	return ipc.ProfileInfo{
+		Name:      in.Name,
+		Slug:      in.Slug,
+		Mode:      in.Mode.String(),
+		DeviceID:  in.DeviceID,
+		Site:      in.Site,
+		ExpiresAt: in.ExpiresAt,
+		CreatedAt: in.CreatedAt,
+		UpdatedAt: in.UpdatedAt,
+		Active:    in.Active,
+	}
 }
 
 // mapTunnelState translates internal/tunnel state into the wire-level

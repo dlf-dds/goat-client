@@ -155,6 +155,44 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 	case MethodGetInnerMeshDiagnostics:
 		out, err := d.h.GetInnerMeshDiagnostics(ctx)
 		fillResult(&resp, out, err)
+	case MethodListProfiles:
+		out, err := d.h.ListProfiles(ctx)
+		fillResult(&resp, out, err)
+	case MethodAddProfile:
+		var p AddProfileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.AddProfile(ctx, p)
+		fillResult(&resp, out, err)
+	case MethodRemoveProfile:
+		var p RemoveProfileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		err := d.h.RemoveProfile(ctx, p)
+		fillResult(&resp, EmptyReply{}, err)
+	case MethodRenameProfile:
+		var p RenameProfileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.RenameProfile(ctx, p)
+		fillResult(&resp, out, err)
+	case MethodSetActiveProfile:
+		var p SetActiveProfileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.SetActiveProfile(ctx, p)
+		fillResult(&resp, out, err)
+	case MethodGetActiveProfile:
+		out, err := d.h.GetActiveProfile(ctx)
+		fillResult(&resp, out, err)
 	default:
 		resp.Error = &rpcError{Code: errCodeMethodNotFound, Message: ErrUnknownMethod.Error()}
 	}
@@ -170,7 +208,8 @@ func (d *Dispatcher) authorizedForMutate() bool {
 func isMutating(m Method) bool {
 	switch m {
 	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode,
-		MethodSetInnerMeshProfile, MethodEnableInnerMesh, MethodDisableInnerMesh:
+		MethodSetInnerMeshProfile, MethodEnableInnerMesh, MethodDisableInnerMesh,
+		MethodAddProfile, MethodRemoveProfile, MethodRenameProfile, MethodSetActiveProfile:
 		return true
 	}
 	return false
