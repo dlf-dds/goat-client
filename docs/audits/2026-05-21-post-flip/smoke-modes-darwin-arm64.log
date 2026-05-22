@@ -1,0 +1,21 @@
+=== RUN   TestThreeModeSmoke_WGCP0Only
+=== PAUSE TestThreeModeSmoke_WGCP0Only
+=== RUN   TestThreeModeSmoke_NetbirdOnly
+2026/05/21 20:16:10 [2026-05-22T02:16:10Z] derive tunnel config: tunnel: bundle missing wg-cp0 keypair
+2026/05/21 20:16:15 [2026-05-22T02:16:15Z] inner-mesh up
+    three_mode_smoke_test.go:180: mesh.Stats: peers=0 in=0 out=0
+    three_mode_smoke_test.go:184: mesh.Logs: 34 lines captured (head="time=\"2026-05-21T20:16:10-06:00\" level=info msg=\"using default Management URL https://api.netbird.io:443\"")
+2026/05/21 20:16:18 [2026-05-22T02:16:18Z] inner-mesh down
+--- PASS: TestThreeModeSmoke_NetbirdOnly (7.13s)
+=== RUN   TestThreeModeSmoke_Combined
+2026/05/21 20:16:18 [2026-05-22T02:16:18Z] wg-cp0 up to 127.0.0.1:51820
+2026/05/21 20:16:18 [2026-05-22T02:16:18Z] inner-mesh up
+2026/05/21 20:16:18 [2026-05-22T02:16:18Z] wg-cp0 down
+2026/05/21 20:16:21 [2026-05-22T02:16:21Z] inner-mesh down
+--- PASS: TestThreeModeSmoke_Combined (3.06s)
+=== CONT  TestThreeModeSmoke_WGCP0Only
+2026/05/21 20:16:21 [2026-05-22T02:16:21Z] wg-cp0 up to 127.0.0.1:51820
+2026/05/21 20:16:21 [2026-05-22T02:16:21Z] wg-cp0 down
+--- PASS: TestThreeModeSmoke_WGCP0Only (0.00s)
+PASS
+ok  	github.com/dlf-dds/goat-client/internal/daemon	10.999s

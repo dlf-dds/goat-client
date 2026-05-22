@@ -13,6 +13,16 @@
 > JSON landed in PR #40. Both columns are live; the open-coordination
 > items in §9 track the residual gaps, and §10 enumerates the
 > verdict-gate gap as of 2026-05-15.
+>
+> **Post-flip re-run (2026-05-21).** Re-audited after PR #50
+> (`328be96`) flipped `innermesh.New()` from `Fake` to `NewNetbird()`.
+> The Fake-era pre-conditions on most rows still hold post-flip; the
+> exceptions are surfaced as DELTA / FAIL rows in §11 with their
+> in-track fixes or tracked follow-ups. Smoke (`make smoke-modes`) is
+> green on darwin/arm64; daemon-side packages cross-build green for
+> linux/amd64 (the Fyne GUI binary still requires CGO/OpenGL per the
+> documented `macos-latest` cross-compile path, unchanged by this
+> re-run).
 
 ## 1. IPC surface
 
@@ -284,3 +294,31 @@ landing flips the `has_mobile_cert` capability into a live mgmt-API
 reach without a 76Q code change either — the cert is already
 consumed via the existing `MobileCert` field on `innermesh.Config`
 (`internal/innermesh/INTERFACE.md` §"Config (v0.2 canonical)").
+
+## 11. Post-flip verdict matrix (2026-05-21, anchor `328be96`)
+
+Anchor: PR #50 (`328be96`) — M3+M4+M5 landed; `innermesh.New()` now
+returns `*Netbird` instead of `*Fake`. This section re-runs the
+parity dimensions against the real netbird path. Smoke command:
+`make smoke-modes` (`go test -run TestThreeModeSmoke ./internal/daemon/...`);
+captured output at
+[`docs/audits/2026-05-21-post-flip/smoke-modes-darwin-arm64.log`](audits/2026-05-21-post-flip/smoke-modes-darwin-arm64.log).
+
+| Row | Dimension | Post-flip verdict | Notes |
+|---|---|---|---|
+| 1 | Three-mode smoke (M4 hermetic) | PASS | All three subtests green on darwin/arm64. `NetbirdOnly`: 32 log lines captured, Stats round-trip OK. `Combined`: both legs up; mesh.Logs non-empty. |
+| 2 | Cross-platform compile (daemon-side packages) | PASS | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./internal/...` green; `go test -c ./internal/daemon` produces a 53 MB statically-linked Linux ELF. GUI cross-build still requires CGO/OpenGL on `macos-latest` per `[[project_macos13_runner_contention]]`. |
+| 3 | Status JSON shape — desktop IPC `getInnerMeshStatus` | PASS | `InnerMeshSnapshot{State, PeerCount, BytesIn, BytesOut, LastHandshake}` shape unchanged from pre-flip. `mapMeshState` correctly maps `innermesh.StateUp` → `WireStateConnected` on the real Netbird. |
+| 4 | Status JSON shape — mobile SDK `GetStatusJSON` | PASS (with pre-existing DELTA) | Mobile shape `{state, mode, bundle_imported, inner_mesh:{state, peer_count, bytes_in, bytes_out}}` uses snake_case + `innermesh.State.String()` raw values (`"up"/"closed"`). Desktop IPC uses camelCase + `ipc.TunnelState` (`"connected"/"disconnected"`). Pre-existing divergence documented in §3 "v0.2 limitation"; not a post-flip regression. Tracked separately for iteration-3 schema convergence. |
+| 5 | Log buffer reader (`Mesh.Logs(tail)`) | PASS | netbird's logrus output reaches the ring buffer via `embed.Options.LogOutput`; smoke captures 32+ lines per session. Desktop `getInnerMeshDiagnostics.LogTail` reads `mesh.Logs(0)` directly. Mobile SDK `GetLogs(tail)` surfacing still pending per §4 §9 (untouched by the flip). |
+| 6 | Diagnostics surface (`getInnerMeshDiagnostics`) | DELTA → fixed in-track | Pre-flip path returned a synthetic `PeerStats[0]{PeerPubKey:"aggregate (fake)"}` row when the mesh was up. Post-flip the label is misleading (the impl isn't fake) and the per-peer breakdown doesn't exist yet. **Fix in this PR**: drop the synthetic row; `PeerStats` stays empty until the Mesh interface grows a per-peer reader. Aggregate counters still surface via `getInnerMeshStatus`'s BytesIn/BytesOut. |
+| 7 | Mode-switch semantics — bring-up Configure call | FAIL → fixed in-track | Pre-flip `SetMode`-into-a-netbird-including-mode allocated a new mesh and called `mesh.Connect` directly. With `Fake` this passed (Configure optional). With `Netbird`, `Connect` errored "not configured" because `Netbird.Configure` validates ManagementURL+SetupKey. **Fix in this PR** (`internal/daemon/daemon.go` SetMode bring-up branch): mirror the wg-cp0 bring-up pattern — derive `meshConfigFromBundle(b)` and `mesh.Configure(cfg)` before `mesh.Connect(ctx)`. Regression guard: `TestSetModeConfiguresInnerMeshFromBundle` in `mode_test.go`. |
+| 8 | Mode-switch semantics — same-leg re-Connect | DELTA (follow-up [#54](https://github.com/dlf-dds/goat-client/issues/54)) | `SetMode` between two netbird-including modes (NetbirdOnly ↔ Combined) does not tear the inner mesh down, but the post-tear-down branch unconditionally calls `mesh.Connect` again. `Netbird.Connect` is not idempotent — it builds a fresh `embed.Client` and overwrites `n.client`, orphaning the prior client's goroutines + WG userspace device. With `Fake` this was harmless (Fake.Connect short-circuits when already StateUp). Tracked at #54: make `Netbird.Connect` no-op-when-StateUp OR Stop the old client first. Out of scope for this audit-PR. |
+| 9 | DeviceID composition path | COORDINATING (PR #53) | PR #53 (open, `track/innermesh-mobile-deviceid`) adds `composeIdentity` + `Config.BundleDeviceID` + `NewWithDeviceID`. Per the post-flip audit brief, this audit does NOT touch `innermesh/{innermesh,frombundle,netbird}.go` or the mobile SDK device-id sites. PR #53 is orthogonal to PR #50 (per its own PR body); both land cleanly in either order. |
+| 10 | Verdict-gate item (f) | DEFENSIBLE post-merge | "Behavior-parity audit between mobile and desktop combined-mode passes" — yes, with the two in-track fixes (rows 6 + 7) and the row-8 follow-up issue filed. (b)/(c)/(d)/(e) still depend on real-device testing + Block 80; unchanged by this audit. |
+
+### Follow-ups filed
+
+- **[#54](https://github.com/dlf-dds/goat-client/issues/54) — `innermesh.Netbird.Connect` should be idempotent or refuse-when-up.** Row 8 above. Cheap-to-medium fix in `internal/innermesh/netbird.go`; needs care so the goroutine + userspace-WG-device hand-off doesn't leak under SetMode pressure. Track name suggestion: `v0.2-netbird-connect-idempotency`.
+- **Mobile SDK status JSON schema convergence.** Row 4 above. Pre-existing; tracked at §9 of this doc. Out of scope for the post-flip re-run.
+- **Mobile SDK `GetLogs(tail)` surfacing.** §9 open item; depends on extending the gomobile facade.

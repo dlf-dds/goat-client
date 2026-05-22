@@ -452,9 +452,13 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 	}
 	if newMode.IncludesNetbird() {
 		d.mu.RLock()
+		b := d.currentBundle
 		mesh := d.mesh
 		d.mu.RUnlock()
-		if mesh != nil {
+		if mesh != nil && b != nil {
+			if err := mesh.Configure(meshConfigFromBundle(b)); err != nil {
+				d.logf("setMode mesh configure: %v", err)
+			}
 			if err := mesh.Connect(ctx); err != nil {
 				d.logf("setMode mesh up: %v", err)
 			}
@@ -557,9 +561,10 @@ func (d *Daemon) DisableInnerMesh(ctx context.Context) error {
 // buffer + (eventually) per-peer stats. Empty reply when the mesh
 // isn't constructed (mode doesn't include inner mesh).
 //
-// PeerStats is left empty for now — Fake reports a single synthetic
-// row from its aggregate Stats so the GUI's Diagnostics view has
-// something to render before the netbird-library impl lands.
+// PeerStats stays empty until the Mesh interface grows a per-peer
+// reader; the aggregate counters surface via GetInnerMeshStatus's
+// BytesIn/BytesOut so the GUI's Diagnostics view still has the
+// session-wide totals to render.
 func (d *Daemon) GetInnerMeshDiagnostics(_ context.Context) (ipc.InnerMeshDiagnosticsReply, error) {
 	d.mu.RLock()
 	mesh := d.mesh
@@ -567,16 +572,7 @@ func (d *Daemon) GetInnerMeshDiagnostics(_ context.Context) (ipc.InnerMeshDiagno
 	if mesh == nil {
 		return ipc.InnerMeshDiagnosticsReply{}, nil
 	}
-	reply := ipc.InnerMeshDiagnosticsReply{LogTail: mesh.Logs(0)}
-	if st, err := mesh.Stats(); err == nil && st.PeerCount > 0 {
-		reply.PeerStats = []ipc.InnerMeshPeerStats{{
-			PeerPubKey:    "aggregate (fake)",
-			BytesIn:       st.BytesIn,
-			BytesOut:      st.BytesOut,
-			LastHandshake: st.LastHandshake,
-		}}
-	}
-	return reply, nil
+	return ipc.InnerMeshDiagnosticsReply{LogTail: mesh.Logs(0)}, nil
 }
 
 // mapMeshState translates inner-mesh state into the wire-level TunnelState.
