@@ -193,13 +193,16 @@ func (c *fakeClient) SetActiveProfile(_ context.Context, slug string) (string, *
 	return prev, c.setActiveReply, nil
 }
 
-func (c *fakeClient) GetActiveProfile(_ context.Context) (*ipc.ProfileInfo, error) {
+func (c *fakeClient) GetActiveProfile(_ context.Context) (ipc.ProfileInfo, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.getActiveProfileErr != nil {
-		return nil, c.getActiveProfileErr
+		return ipc.ProfileInfo{}, false, c.getActiveProfileErr
 	}
-	return c.getActiveProfile, nil
+	if c.getActiveProfile == nil {
+		return ipc.ProfileInfo{}, false, nil
+	}
+	return *c.getActiveProfile, true, nil
 }
 
 func (c *fakeClient) Close() error {

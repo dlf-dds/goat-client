@@ -300,15 +300,15 @@ func (c *stubClient) SetActiveProfile(ctx context.Context, slug string) (string,
 	return prev, &cur, nil
 }
 
-func (c *stubClient) GetActiveProfile(ctx context.Context) (*ProfileInfo, error) {
+func (c *stubClient) GetActiveProfile(ctx context.Context) (ProfileInfo, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.active == "" {
-		return nil, nil
+		return ProfileInfo{}, false, nil
 	}
 	cur := c.profiles[c.active]
 	cur.Active = true
-	return &cur, nil
+	return cur, true, nil
 }
 
 // stubSlugify mirrors the production profile.Slugify shape (the stub

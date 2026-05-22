@@ -235,6 +235,13 @@ func (s *Store) List() ([]Info, error) {
 // summarise reads <slug>.meta.json + <slug>.cbor and assembles an
 // Info. The CBOR parse is bundle.Unmarshal (no signature check —
 // that happened at AddProfile time; we trust on-disk bundles).
+//
+// Bundle-read / -parse failures intentionally return partial Info +
+// nil err: the meta.json fields (Name, Mode, timestamps) are still
+// usable for the UI even if the bundle file got truncated or
+// removed out-of-band. The lint exemption below documents that the
+// nil-err return is deliberate (operator sees the partial row + an
+// expiry-blank cell rather than the whole list disappearing).
 func (s *Store) summarise(slug string) (Info, error) {
 	m, err := s.readMeta(slug)
 	if err != nil {
@@ -247,13 +254,13 @@ func (s *Store) summarise(slug string) (Info, error) {
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}
-	data, err := os.ReadFile(s.bundlePath(slug))
-	if err != nil {
-		return info, nil // partial info: bundle missing
+	data, readErr := os.ReadFile(s.bundlePath(slug))
+	if readErr != nil {
+		return info, nil //nolint:nilerr // partial info: bundle missing is non-fatal for List
 	}
-	b, err := bundle.Unmarshal(data)
-	if err != nil {
-		return info, nil // partial info: bundle malformed
+	b, parseErr := bundle.Unmarshal(data)
+	if parseErr != nil {
+		return info, nil //nolint:nilerr // partial info: bundle malformed is non-fatal for List
 	}
 	info.DeviceID = b.DeviceID
 	info.Site = b.Site

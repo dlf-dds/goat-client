@@ -133,10 +133,12 @@ type Client interface {
 	// previous active slug so the GUI can log or roll back.
 	SetActiveProfile(ctx context.Context, slug string) (previous string, active *ProfileInfo, err error)
 
-	// GetActiveProfile returns the currently-active profile (or
-	// nil if none). Tighter polling surface than GetStatus for the
-	// tray submenu's checkmark.
-	GetActiveProfile(ctx context.Context) (*ProfileInfo, error)
+	// GetActiveProfile returns the currently-active profile. hasAny
+	// is false when the store is empty AND no profile is active; in
+	// that case the returned ProfileInfo is the zero value. Tighter
+	// polling surface than GetStatus for the tray submenu's
+	// checkmark.
+	GetActiveProfile(ctx context.Context) (active ProfileInfo, hasAny bool, err error)
 
 	// Close releases any underlying transport resources.
 	Close() error

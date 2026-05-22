@@ -880,7 +880,7 @@ func (d *Daemon) ListProfiles(_ context.Context) (ipc.ListProfilesReply, error) 
 // daemon switches to it after import — same reconcile-during-switch
 // path as SetActiveProfile.
 func (d *Daemon) AddProfile(ctx context.Context, req ipc.AddProfileRequest) (ipc.AddProfileReply, error) {
-	resolvedMode := mode.Default
+	var resolvedMode mode.Mode
 	if req.Mode != "" {
 		m, err := mode.Parse(req.Mode)
 		if err != nil {

@@ -259,16 +259,12 @@ func (c *realClient) SetActiveProfile(ctx context.Context, slug string) (string,
 	return reply.PreviousActive, &p, nil
 }
 
-func (c *realClient) GetActiveProfile(ctx context.Context) (*ProfileInfo, error) {
+func (c *realClient) GetActiveProfile(ctx context.Context) (ProfileInfo, bool, error) {
 	var reply GetActiveProfileReply
 	if err := c.rpc.call(MethodGetActiveProfile, EmptyRequest{}, &reply, 5*time.Second); err != nil {
-		return nil, err
+		return ProfileInfo{}, false, err
 	}
-	if !reply.HasAny {
-		return nil, nil
-	}
-	p := reply.Active
-	return &p, nil
+	return reply.Active, reply.HasAny, nil
 }
 
 // mapWireState translates the wire-level TunnelState (5 values including
