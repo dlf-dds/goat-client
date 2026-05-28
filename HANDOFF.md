@@ -187,14 +187,18 @@
 >   smokes), `combined` + `netbird-only` modes drive no real inner-mesh
 >   traffic. Tracked at `internal/innermesh/UNSTRIP.md`. **Load-bearing
 >   for v0.2 verdict-gate items (b) (c) (d) (e).**
-> - **Block 80 crutch tier not yet live** — ADR 0843 substrate
->   (implementation-plan rows 80A-80H) carries no ✅ markers in trunk
->   as of 2026-05-15. Blocks v0.2 verdict-gate (d) `netbird-only` with
->   mgmt-API reach over Block 80. Mobile side is contract-complete:
->   `MobileCert` is plumbed through `innermesh.Config` and the SDK's
->   `BundleCapabilities.has_mobile_cert` signals readiness. Escalated
->   upstream to trunk substrate owner per the v0.2 mobile-closeout
->   prompt.
+> - ~~**Block 80 crutch tier not yet live**~~ ✅ activated 2026-05-28
+>   (goat-trunk [PR #593](https://github.com/dlf-dds/DesertBreadBird/pull/593),
+>   commit `be23f441`). Three crutch VPSes serving traffic at
+>   `goat-public-{fra,isr,mum}.netbird-prod.90at.net` with strict-
+>   required client-cert mTLS verified externally. Verdict-gate (d)
+>   transitioned from `⛔ blocked` to `⚠ operator-fired` — gate-(d)
+>   test sequence + bundle-mint recipe in
+>   [`docs/operations/v0.2-verdict-gate-playbook.md` §(d)](docs/operations/v0.2-verdict-gate-playbook.md#d-netbird-only-over-block-80-crutch-tier).
+>   Mobile-cert plumbing on the goat-client side
+>   (`innermesh.Config.MobileCert`, bundle `mobile_cert` ext,
+>   `BundleCapabilities.has_mobile_cert`) was contract-complete from
+>   v0.2 foundation; no further goat-client code change needed.
 > - Real-device co-active testing (`combined` on ≥1 iOS + ≥1 Android)
 >   + TestFlight + Play Internal track submission are operator-fired.
 >   Release-signing pipelines + ASC API tooling already landed (PRs

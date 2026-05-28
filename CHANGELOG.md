@@ -17,8 +17,8 @@ clear per [`docs/operations/v0.2-verdict-gate-playbook.md`](docs/operations/v0.2
 The **three-mode triad release.** Generalises goat-client from
 v0.1.x's single-tunnel posture (wg-cp0 only) to **three operating
 modes across every platform class**: `wg-cp0-only` (the v0.1.x
-regression bar), `netbird-only` (inner mesh only, via Block 80 crutch
-tier once it stands up), `combined` (both tunnels in one process).
+regression bar), `netbird-only` (inner mesh only, via the now-live
+Block 80 crutch tier), `combined` (both tunnels in one process).
 The mode is operator-pickable at install time on desktop + headless,
 end-user-pickable at runtime in the Fyne GUI + iOS + Android shells.
 Per [ADR 0840 Amendment 2026-05-13](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/adr/0840-goat-client-cross-platform-daemon-gui.md)
@@ -29,9 +29,13 @@ vendored netbird-as-library un-strip (PR #41 / #43 / #50) lands a
 genuine `*Netbird` implementation behind `innermesh.New()` rather
 than the no-op `Fake` that shipped in v0.1.x. `combined` and
 `netbird-only` modes now drive actual inner-mesh peer reach end-to-
-end, gated only on the operator running the three-real-device smoke
-that closes verdict-gate items (b) + (c) and the operator-fired
-TestFlight + Play Internal submissions that close (g).
+end, gated only on operator-fired real-hardware runs (verdict-gate
+items (b) + (c) + (d)) and the operator-fired TestFlight + Play
+Internal submissions that close (g). The Block 80 public mTLS
+crutch tier — load-bearing for (d) `netbird-only` over public-
+internet reach — activated 2026-05-28 on goat-trunk (PR #593) at
+`goat-public-{fra,isr,mum}.netbird-prod.90at.net`, lifting (d)
+from `⛔ blocked` to `⚠ operator-fired`.
 
 ### Added
 
@@ -243,16 +247,18 @@ TestFlight + Play Internal submissions that close (g).
 
 The v0.2 verdict gate is seven items per
 [implementation-plan row 8621](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/project/implementation-plan.md#block-76).
-This release's PRs close every code-side item; the remaining four
+This release's PRs close every code-side item; the remaining five
 gates are operator-fired and tracked in
 [`docs/operations/v0.2-verdict-gate-playbook.md`](docs/operations/v0.2-verdict-gate-playbook.md).
+Substrate prerequisites for the three inner-mesh gates ((b), (c), (d))
+are codified once in [goat-trunk `v0.2-mvp-infra-state.md`](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/v0.2-mvp-infra-state.md).
 
 | Gate | What | Status | Closure |
 |---|---|---|---|
 | **(a)** | `wg-cp0-only` unchanged from v0.1.x on every platform (regression bar) | ✅ code-side complete | Three-mode smoke (PR #50) + mode selector (PR #37) keep `wg-cp0-only` on the v0.1.x codepath; CI matrix exercises it on every PR. |
 | **(b)** | `combined` on ≥3 desktop installs with inner-mesh peer reach | ⚠ operator-fired | Code-side ready post-#50; see [playbook §(b)](docs/operations/v0.2-verdict-gate-playbook.md#b-combined-on-3-desktop-installs). |
 | **(c)** | `combined` on ≥1 iOS + ≥1 Android device | ⚠ operator-fired | Code-side ready post-#50 + #53; see [playbook §(c)](docs/operations/v0.2-verdict-gate-playbook.md#c-combined-on-1-ios--1-android-device). |
-| **(d)** | `netbird-only` on ≥1 mobile + ≥1 desktop with mgmt-API reach over Block 80 | ⛔ blocked | Block 80 crutch substrate (ADR 0843, trunk rows 80A–80H) not yet live as of 2026-05-21. Mobile-cert plumbing is contract-complete (PR #39 `MobileCert` field + PR #40 `BundleCapabilities.has_mobile_cert` signal). **Deferred past v0.2.0 tag — closure tracked at trunk substrate level.** |
+| **(d)** | `netbird-only` on ≥1 mobile + ≥1 desktop with mgmt-API reach over Block 80 | ⚠ operator-fired | Block 80 crutch substrate activated 2026-05-28 (goat-trunk PR #593, three live VPSes at `goat-public-{fra,isr,mum}.netbird-prod.90at.net`). Mobile-cert plumbing contract-complete (PR #39 `MobileCert` field + PR #40 `BundleCapabilities.has_mobile_cert` signal); bundle-mint recipe in [goat-trunk `v0.2-mvp-infra-state.md` §Q3 gate-(d)](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/v0.2-mvp-infra-state.md#mint-recipe--gate-d-netbird-only-over-block-80-bundle). See [playbook §(d)](docs/operations/v0.2-verdict-gate-playbook.md#d-netbird-only-over-block-80-crutch-tier). |
 | **(e)** | Headless mode on ≥1 single-Orin site, one-binary install in any mode | ⚠ operator-fired | Code-side complete (PR #37 headless binary + `--headless` flag); see [playbook §(e)](docs/operations/v0.2-verdict-gate-playbook.md#e-headless-on-a-single-orin-site) and [`docs/operations/goat-client-headless-bringup.md`](docs/operations/goat-client-headless-bringup.md). |
 | **(f)** | Mobile ↔ desktop combined-mode parity audit | ✅ landed | [`docs/parity-audit-desktop-vs-mobile.md`](docs/parity-audit-desktop-vs-mobile.md) post-M5 refresh (PR #48). |
 | **(g)** | TestFlight + Play Internal-track presence | ⚠ operator-fired | Release-signing pipelines (PR #44 / #46 / #47); see [playbook §(g)](docs/operations/v0.2-verdict-gate-playbook.md#g-testflight--play-internal-submission). |
@@ -274,13 +280,20 @@ gates are operator-fired and tracked in
   because both halves of identity are baked into the wire-side
   hostname regardless of operator template config. (PR #53 client
   side.)
-- **Block 80 crutch tier (ADR 0843).** Verdict-gate (d) blocker.
-  The mobile-cert side of the contract is fully shipped from
-  goat-client (`innermesh.Config.MobileCert` field + bundle
-  `mobile_cert` CBOR ext + `BundleCapabilities.has_mobile_cert`
-  capability bit). Server-side substrate (trunk rows 80A–80H)
-  stands up on trunk's own schedule; (d) closes when it does, no
-  additional goat-client code change expected.
+- **Block 80 crutch tier (ADR 0843).** Verdict-gate (d) substrate
+  prerequisite. Activated 2026-05-28 on goat-trunk
+  ([PR #593](https://github.com/dlf-dds/DesertBreadBird/pull/593),
+  commit `be23f441`) with three live VPSes at
+  `goat-public-{fra,isr,mum}.netbird-prod.90at.net` and strict-
+  required client-cert mTLS verified externally. The mobile-cert
+  side of the contract is fully shipped from goat-client
+  (`innermesh.Config.MobileCert` field + bundle `mobile_cert` CBOR
+  ext + `BundleCapabilities.has_mobile_cert` capability bit). No
+  additional goat-client code change needed for (d) to fire;
+  operator runs follow the
+  [v0.2 verdict-gate playbook §(d)](docs/operations/v0.2-verdict-gate-playbook.md#d-netbird-only-over-block-80-crutch-tier)
+  with the gate-(d) bundle-mint recipe from
+  [goat-trunk `v0.2-mvp-infra-state.md` §Q3](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/operations/v0.2-mvp-infra-state.md#mint-recipe--gate-d-netbird-only-over-block-80-bundle).
 - **Block 79 ECDSA P-256 rotation.** Already landed in v0.1.1
   (PR #26) — `internal/bundle/bundle.go` `Verify` accepts ECDSA
   public keys; `internal/trustanchor/` carries the post-rotation
