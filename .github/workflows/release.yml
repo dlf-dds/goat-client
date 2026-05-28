@@ -712,6 +712,14 @@ jobs:
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true
+          # Auto-mark rc / alpha / beta / pre tags as pre-release so the
+          # GitHub Releases UI does not promote them to "Latest". A
+          # `goat-client-v0.2.0` tag still ships as a full release;
+          # `goat-client-v0.2.0-rc1` / `-alpha.2` / `-beta` / `-pre.1`
+          # all flip to pre-release. The condition is plain string-
+          # contains on the tag ref because semver pre-release segments
+          # always carry a dash before the identifier.
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-pre') }}
           body: |
             ## goat-client ${{ github.ref_name }}
 
