@@ -45,6 +45,7 @@ func main() {
 	modeFlag := flag.String("mode", "", "v0.2 active mode override (wg-cp0-only|netbird-only|combined); empty = use --config file")
 	headlessFlag := flag.Bool("headless", false, "explicit marker for headless deployments (no-op — goat-clientd never imports a GUI)")
 	importBundleFlag := flag.String("import-bundle", "", "one-shot: validate + persist the bundle at this path, then exit 0 (no IPC server)")
+	autoConnectFlag := flag.Bool("auto-connect", true, "after loading a persisted bundle, bring the active mode's subsystems up automatically (idempotent; no-op if already connected or no bundle). Disable for GUI installs where the user clicks Connect explicitly.")
 	flag.Parse()
 
 	_ = headlessFlag // accepted for explicit operator-facing clarity
@@ -116,6 +117,21 @@ func main() {
 			cancel()
 		}
 	}()
+
+	// Auto-connect on startup so a persisted-bundle box reaches
+	// tunnels-up without requiring a GUI or external connect-trigger
+	// (closes the headless install gap — verdict-gate (e) needs this).
+	// "No bundle loaded" returns an error from Connect which we log
+	// and treat as non-fatal — the daemon stays alive listening for
+	// IPC ImportBundle followed by Connect from a client. Idempotent:
+	// if the GUI also fires Connect, the second call is a no-op.
+	if *autoConnectFlag {
+		go func() {
+			if err := d.Connect(ctx); err != nil {
+				log.Printf("startup auto-connect: %v (daemon idle; send connect via IPC after bundle import)", err)
+			}
+		}()
+	}
 
 	<-ctx.Done()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
