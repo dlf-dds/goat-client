@@ -5,7 +5,7 @@ End-to-end walk: operator mints a bundle, end-user installs goat-client and impo
 ## Roles
 
 - **Operator** — has the offline-CA root + the wg-cp0 site config. Mints one bundle per device using `bundle-create` in the [goat trunk](https://github.com/dlf-dds/DesertBreadBird).
-- **End-user** — receives the bundle, installs goat-client on their laptop / desktop, and imports the bundle. No CLI needed past the install command.
+- **End-user** — receives the bundle, installs goat-client on their laptop / desktop, and imports the bundle. On a desktop with the GUI, no CLI is needed past the install command. On a headless box (no GUI), import + drive the tunnel from the shell — see [`docs/cli.md`](cli.md).
 
 ## 1. Operator mints the bundle
 
@@ -141,6 +141,7 @@ If the tunnel handshakes but ping fails, the most likely culprit is DNS resoluti
 
 ## Where to next
 
+- [`cli.md`](cli.md) — drive + inspect the daemon from a shell (`goat-client status / connect / disconnect / getmode / setmode`); the load-bearing path for headless boxes and ops scripts.
 - [`troubleshooting.md`](troubleshooting.md) — when something doesn't come up.
 - [`qr-bundle.md`](qr-bundle.md) — QR-encoded bundles for air-gapped or mobile delivery.
 - [README → Verifying release artifacts](../README.md#verifying-release-artifacts) — confirm your install came from a signed release before running the daemon as root.

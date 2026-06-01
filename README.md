@@ -86,6 +86,27 @@ After install, the daemon (`goat-clientd`) is running but inactive — it has no
 
 The daemon writes status + handshake details to its log directory (`/var/log/goat-client/` on Linux/macOS, `%ProgramData%\goat-client\logs\` on Windows). See [docs/quickstart.md](docs/quickstart.md) for the operator → end-user end-to-end walk and [docs/troubleshooting.md](docs/troubleshooting.md) when something doesn't come up.
 
+## CLI (`goat-client`)
+
+The same `goat-client` binary that launches the GUI is also a command-line tool — handy for headless boxes (no GUI), ops scripts, and quick status checks. It talks to the running daemon over the local IPC socket and exits.
+
+```bash
+goat-client status        # mode, tunnel state, bundle metadata, byte counters, last handshake
+goat-client connect       # bring the active mode's tunnel(s) up (idempotent)
+goat-client disconnect    # tear them down
+goat-client getmode       # print the active v0.2 mode
+goat-client setmode <wg-cp0-only|netbird-only|combined>   # switch mode at runtime
+```
+
+On a headless box, import the bundle with the daemon's one-shot mode, then drive it from the shell:
+
+```bash
+sudo goat-clientd --import-bundle alice-bundle.cbor   # validate + persist, then exit
+goat-client status                                    # inspect; daemon auto-connects on (re)start
+```
+
+Full subcommand reference, output fields, exit codes, and `--daemon-addr` override: **[docs/cli.md](docs/cli.md)**.
+
 ## Verifying release artifacts
 
 Every release archive is cosign-signed (keyless / OIDC, GitHub Actions identity). Verify before installing:
@@ -157,6 +178,7 @@ xcodebuild -project mobile/ios/Shell/GoatClient.xcodeproj \
 ## Documentation
 
 - [`docs/quickstart.md`](docs/quickstart.md) — operator → end-user → tunnel up.
+- [`docs/cli.md`](docs/cli.md) — the `goat-client` CLI: status / connect / disconnect / getmode / setmode, headless bundle import, exit codes.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — daemon won't start, bundle rejected, DNS broken.
 - [`docs/qr-bundle.md`](docs/qr-bundle.md) — QR-encoded bundle codec for the mobile import flow.
 - [`HANDOFF.md`](HANDOFF.md) — per-track build-out history (mostly historical post-v0.1.0).
