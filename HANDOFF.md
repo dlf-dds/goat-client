@@ -51,8 +51,26 @@
 >    drop the unsigned-builds caveats from README + troubleshooting
 >    and wire the signing env vars into release.yml. Operator-fired,
 >    not a coding track.
+> 7. **`debugBundle` IPC RPC — closes the last `goat client` ↔ netbird-CLI
+>    parity gap.** DesertBreadBird's goat-cli Phase F.5 wrapped every
+>    netbird-CLI `client` verb the released daemon (v0.1.2) exposes EXCEPT
+>    `debug bundle` — netbird's diagnostic tarball (daemon logs + config +
+>    tunnel/mesh state + recent status/errors gathered into one archive a
+>    vendor hands to support). goat-cli can't assemble that from outside the
+>    daemon — the daemon holds the logs + live state — so it needs a
+>    daemon-side `debugBundle` RPC; goat-cli only wraps what the daemon
+>    exposes. Work: add `MethodDebugBundle` to `internal/ipc/ipc.go` + a
+>    handler that gathers the rolling daemon log tail (`innermesh.Logs` +
+>    the outer-tunnel log buffer), the active mode + profile, `getStatus` +
+>    `getInnerMeshStatus` snapshots, and sanitized config into a `tar.gz`,
+>    **redacting secrets** (no setup keys, PSKs, or cert private keys —
+>    same redaction bar as the existing diagnostics surface). The goat-cli
+>    side is then a ~one-line wrap like the other F.5 verbs
+>    (`goat client debug bundle`, DesertBreadBird repo). Reference shape:
+>    netbird's `client/cmd/debug.go`. ~1-2 days daemon-side; sequence after
+>    the v0.2 mode work settles. Track name TBD.
 >
-> Items 1-3 closed in v0.1.1 (2026-05-11). Items 4-6 carry forward as
+> Items 1-3 closed in v0.1.1 (2026-05-11). Items 4-7 carry forward as
 > v0.1.x backlog.
 >
 > ---
