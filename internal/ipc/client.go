@@ -177,6 +177,14 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 	return out, nil
 }
 
+func (c *realClient) GetPeerConnectivity(ctx context.Context) ([]PeerConnectivity, error) {
+	var reply GetPeerConnectivityReply
+	if err := c.rpc.call(MethodGetPeerConnectivity, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		return nil, err
+	}
+	return reply.Peers, nil
+}
+
 func (c *realClient) Connect(ctx context.Context) error {
 	return c.rpc.call(MethodConnect, EmptyRequest{}, nil, 30*time.Second)
 }
