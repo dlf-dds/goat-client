@@ -8,7 +8,16 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
-No work in flight beyond v0.3.1.
+No work in flight beyond v0.3.2.
+
+## [0.3.2] — 2026-07-01
+
+Signs the `.deb` packages. v0.3.1's release-signing glob matched only the
+hyphen-named assets (`goat-client-*`), so the two Debian packages — which
+use the underscore convention `goat-client_<ver>_<arch>.deb` — shipped
+without a per-file cosign bundle (they were still covered by the
+cosign-signed `SHA256SUMS`). The glob now matches `goat-client*.deb`, so
+every release artifact carries its own `.cosign-bundle`. No code change.
 
 ## [0.3.1] — 2026-07-01
 
@@ -746,7 +755,8 @@ commit `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe` (BSD-3-Clause). Design
 lineage cited per file; aggregate attribution in
 [`NOTICE`](NOTICE) + [`LICENSE.netbird-bsd3`](LICENSE.netbird-bsd3).
 
-[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.1...HEAD
+[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.2...HEAD
+[0.3.2]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.2
 [0.3.1]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.1
 [0.3.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.0
 [0.2.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.2.0
