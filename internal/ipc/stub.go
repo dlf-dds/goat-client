@@ -317,6 +317,16 @@ func (c *stubClient) GetPeerConnectivity(ctx context.Context) ([]PeerConnectivit
 	return nil, nil
 }
 
+// GetIncomingFiles returns no files: the stub has no goatdrop server.
+func (c *stubClient) GetIncomingFiles(ctx context.Context) ([]IncomingFile, error) {
+	return nil, nil
+}
+
+// SendFile is unavailable on the stub client.
+func (c *stubClient) SendFile(ctx context.Context, peer, path string) (SendFileReply, error) {
+	return SendFileReply{}, errors.New("stub: file drop not available")
+}
+
 // stubSlugify mirrors the production profile.Slugify shape (the stub
 // doesn't import internal/profile to avoid a cycle: stub clients are
 // the GUI-side stand-in, and the GUI doesn't need the full store).

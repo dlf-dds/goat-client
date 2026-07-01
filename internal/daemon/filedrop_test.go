@@ -11,6 +11,7 @@ import (
 
 	fd "github.com/dlf-dds/goat-client/internal/filedrop"
 	"github.com/dlf-dds/goat-client/internal/innermesh"
+	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
 )
 
@@ -37,6 +38,52 @@ func TestAuthorizerDeniesWhenMeshDown(t *testing.T) {
 	d := newTestDaemon(t, mode.NetbirdOnly) // mesh constructed but not Connect'd
 	if _, ok := d.authorizer().Authorize("100.92.0.11"); ok {
 		t.Fatal("authorizer admitted a peer while the mesh is down (fail-closed expected)")
+	}
+}
+
+func TestResolvePeer(t *testing.T) {
+	peers := []innermesh.PeerStatus{
+		{IP: "100.92.0.11", FQDN: "alpha.goat"},
+		{IP: "100.92.0.12", FQDN: ""},
+	}
+	// By IP.
+	if ip, label, ok := resolvePeer(peers, "100.92.0.11"); !ok || ip != "100.92.0.11" || label != "alpha.goat" {
+		t.Errorf("by-IP resolve = %q,%q,%v", ip, label, ok)
+	}
+	// By FQDN, case-insensitive.
+	if ip, label, ok := resolvePeer(peers, "ALPHA.goat"); !ok || ip != "100.92.0.11" || label != "alpha.goat" {
+		t.Errorf("by-FQDN resolve = %q,%q,%v", ip, label, ok)
+	}
+	// FQDN-less peer falls back to IP label.
+	if ip, label, ok := resolvePeer(peers, "100.92.0.12"); !ok || label != "100.92.0.12" {
+		t.Errorf("fqdn-less label = %q,%q,%v", ip, label, ok)
+	}
+	// Unknown.
+	if _, _, ok := resolvePeer(peers, "203.0.113.1"); ok {
+		t.Error("unknown peer resolved")
+	}
+	// An empty FQDN must not match an empty query.
+	if _, _, ok := resolvePeer(peers, ""); ok {
+		t.Error("empty query matched a peer")
+	}
+}
+
+func TestSendFileUnknownPeerErrors(t *testing.T) {
+	d := newTestDaemon(t, mode.NetbirdOnly)
+	if err := d.mesh.Connect(context.Background()); err != nil {
+		t.Fatalf("mesh connect: %v", err)
+	}
+	_, err := d.SendFile(context.Background(), ipc.SendFileRequest{Peer: "no-such-peer", Path: "/tmp/x"})
+	if err == nil {
+		t.Fatal("expected an error for an unknown peer")
+	}
+}
+
+func TestSendFileNoInnerMeshErrors(t *testing.T) {
+	d := newTestDaemon(t, mode.WGCP0Only)
+	_, err := d.SendFile(context.Background(), ipc.SendFileRequest{Peer: "100.92.0.11", Path: "/tmp/x"})
+	if err == nil {
+		t.Fatal("expected an error in a mode without the inner mesh")
 	}
 }
 

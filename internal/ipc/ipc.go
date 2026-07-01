@@ -65,6 +65,10 @@ const (
 	// filedrop receive server). Read-only.
 	MethodGetIncomingFiles Method = "getIncomingFiles"
 
+	// sendFile drops a local file to an inner-mesh peer via goatdrop.
+	// Mutating (it performs an outbound action on the user's behalf).
+	MethodSendFile Method = "sendFile"
+
 	// v0.2 multi-network methods (Block 76M). The profile store
 	// holds N bundles + a single active-profile pointer; setActive
 	// is the load-bearing "switch" call that tears down the
@@ -203,6 +207,22 @@ type IncomingFile struct {
 // GetIncomingFilesReply lists recent inbound transfers, newest first.
 type GetIncomingFilesReply struct {
 	Files []IncomingFile `json:"files"`
+}
+
+// SendFileRequest asks the daemon to drop a local file to an inner-mesh
+// peer. Peer is the peer's overlay IP or its mesh DNS name (FQDN); Path is
+// a local file path readable by the daemon.
+type SendFileRequest struct {
+	Peer string `json:"peer"`
+	Path string `json:"path"`
+}
+
+// SendFileReply summarizes a completed outbound drop.
+type SendFileReply struct {
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	ToPeer string `json:"toPeer"`
+	ToIP   string `json:"toIp"`
 }
 
 // GetModeReply / SetModeRequest / SetModeReply carry the v0.2 mode
@@ -393,6 +413,9 @@ type Handler interface {
 
 	// GetIncomingFiles lists recent goatdrop transfers. Read-only.
 	GetIncomingFiles(ctx context.Context) (GetIncomingFilesReply, error)
+
+	// SendFile drops a local file to an inner-mesh peer. Mutating.
+	SendFile(ctx context.Context, req SendFileRequest) (SendFileReply, error)
 
 	// v0.2 multi-network methods (Block 76M).
 	ListProfiles(ctx context.Context) (ListProfilesReply, error)

@@ -145,6 +145,13 @@ type Client interface {
 	// identity joined with live RTT. Empty in modes without the inner mesh.
 	GetPeerConnectivity(ctx context.Context) ([]PeerConnectivity, error)
 
+	// GetIncomingFiles lists recent goatdrop transfers, newest first.
+	GetIncomingFiles(ctx context.Context) ([]IncomingFile, error)
+
+	// SendFile drops a local file to an inner-mesh peer (identified by its
+	// overlay IP or mesh name). Returns the stored name + size on success.
+	SendFile(ctx context.Context, peer, path string) (SendFileReply, error)
+
 	// Close releases any underlying transport resources.
 	Close() error
 }
