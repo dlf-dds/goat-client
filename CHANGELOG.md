@@ -8,7 +8,61 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
-No work in flight beyond v0.2.0.
+No work in flight beyond v0.3.0.
+
+## [0.3.0] — 2026-07-01
+
+The **inner-mesh parity release.** Brings goat-client to functional
+parity with the two headline per-device features of Tailscale's app —
+a live **connectivity check** and a peer **file drop** — as inner-mesh
+peer capabilities. Both are built on primitives goat-client already
+owns: a stable per-peer overlay IP, source-IP-as-identity auth, the
+vendored netbird-as-library inside `goat-clientd`, and our own Rust
+relay. Per [ADR 1063](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/adr/1063-goat-client-connectivity-check-and-file-drop.md)
+and [`goat-client-connectivity-and-filedrop.md`](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/design/goat-client-connectivity-and-filedrop.md).
+
+### Added
+
+- **Connectivity check — live per-peer RTT + direct/relayed badge.**
+  A new **Devices** tab in the Fyne GUI renders the inner-mesh peer
+  roster with a detail pane and a live latency chart. Two independent
+  sources back it, as the design requires: RTT comes from an
+  app-layer UDP echo (`internal/peerping/` — prober + `Responder` +
+  per-peer sampler `Manager` with a rolling ring buffer), and the
+  direct-vs-relayed badge is *read* from netbird's
+  `connectionType`/ICE status via `innermesh.Peers()` (an app-layer
+  echo can't see the underlay). The daemon measures every live peer
+  over a mesh-only echo responder bound to the `wt0` tunnel IP, and
+  serves badge + identity + live-RTT through the new
+  `getPeerConnectivity` IPC. Honesty discipline throughout — RTT
+  shows `—`, not a fabricated `0`, until a real sample lands.
+  (goat-client PRs #69–#74.)
+- **goatdrop — peer-to-peer file drop (Taildrop equivalent).** Send a
+  file straight to an inner-mesh peer with
+  `goat-client send <peer> <file>` (CLI) or the GUI drop zone in the
+  Devices pane. `internal/filedrop/` is an HTTP `PUT` server bound to
+  the tunnel IP; auth is **fail-closed** — the receiver resolves the
+  connection's source overlay IP against the live netbird peer list
+  and rejects anything unrecognised (no separate token). Received
+  files land in `~/.goat-client/inbox` by default and surface in the
+  GUI's Received card; the send path adds a `sendFile` IPC + peer
+  resolution + `getIncomingFiles`. The file server binds outbound-only
+  until the mesh is up (it needs `LocalIP()` to bind). Requires
+  `netbird-only` or `combined` mode. (goat-client PRs #75–#78.)
+
+### Notes
+
+- **Parity verdict.** Functional parity with Tailscale on both
+  features; goat-client **exceeds** on relay-path throughput
+  ([ADR 0709](https://github.com/dlf-dds/DesertBreadBird/blob/main/docs/adr/0709-block-33-relay-rewrite-architecture.md)),
+  identity-grade authz, evidence-grade audit, and sovereign/denied-
+  environment operation. The one ceiling we can't match is NAT-
+  traversal hit-rate + a three-relay footprint, so the badge reads
+  "Relayed" honestly in some adversarial-NAT cases Tailscale would
+  win — largely retired by the six-site scope.
+- **Relay store-and-forward to offline peers** (the differentiator
+  beyond Taildrop) is designed-not-built and lives in the DesertBread
+  core relay crates, not this release.
 
 ## [0.2.0] — 2026-06-01
 
@@ -663,7 +717,8 @@ commit `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe` (BSD-3-Clause). Design
 lineage cited per file; aggregate attribution in
 [`NOTICE`](NOTICE) + [`LICENSE.netbird-bsd3`](LICENSE.netbird-bsd3).
 
-[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.2.0...HEAD
+[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.0...HEAD
+[0.3.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.0
 [0.2.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.2.0
 [0.1.2]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.2
 [0.1.1]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.1
