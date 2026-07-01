@@ -236,5 +236,6 @@ func (r *recordingMesh) Disconnect(ctx context.Context) error   { return r.inner
 func (r *recordingMesh) State() innermesh.State                 { return r.inner.State() }
 func (r *recordingMesh) Stats() (innermesh.Stats, error)        { return r.inner.Stats() }
 func (r *recordingMesh) Peers() ([]innermesh.PeerStatus, error) { return r.inner.Peers() }
+func (r *recordingMesh) LocalIP() (string, error)               { return r.inner.LocalIP() }
 func (r *recordingMesh) Logs(tail int) []string                 { return r.inner.Logs(tail) }
 func (r *recordingMesh) Close() error                           { return r.inner.Close() }

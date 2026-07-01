@@ -177,6 +177,11 @@ type Mesh interface {
 	// PeerStatus.Latency. Additive extension to the v0.2 interface.
 	Peers() ([]PeerStatus, error)
 
+	// LocalIP returns this node's own overlay (tunnel) IP, or "" when the
+	// mesh is not up / the IP is not yet known. The peerping subsystem
+	// binds its echo Responder to this address to keep it mesh-only.
+	LocalIP() (string, error)
+
 	// Logs returns the most recent tail log lines from the inner
 	// mesh's internal log buffer. tail <= 0 returns the entire
 	// buffer (bounded by the implementation's ring-buffer capacity).

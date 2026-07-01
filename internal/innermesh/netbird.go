@@ -229,6 +229,22 @@ func (n *Netbird) Peers() ([]PeerStatus, error) {
 	return out, nil
 }
 
+// LocalIP returns this node's overlay IP from netbird's FullStatus
+// (LocalPeerState.IP), or "" when the client is not built yet.
+func (n *Netbird) LocalIP() (string, error) {
+	n.mu.Lock()
+	client := n.client
+	n.mu.Unlock()
+	if client == nil {
+		return "", nil
+	}
+	fs, err := client.Status()
+	if err != nil {
+		return "", fmt.Errorf("innermesh/netbird: client.Status: %w", err)
+	}
+	return fs.LocalPeerState.IP, nil
+}
+
 // Logs returns the most recent tail log lines from the ring buffer
 // fed by netbird's logrus output.
 func (n *Netbird) Logs(tail int) []string {
