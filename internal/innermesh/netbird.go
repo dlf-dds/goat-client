@@ -190,6 +190,45 @@ func (n *Netbird) Stats() (Stats, error) {
 	return out, nil
 }
 
+// Peers reads netbird's FullStatus and maps each peer to a PeerStatus.
+// Returns an empty slice when the client is not built yet (mesh down).
+// The direct/relayed badge + identity fields come from here; live RTT is
+// internal/peerping's job, not PeerStatus.Latency (netbird's one-shot ICE
+// reading — see the PeerStatus doc). ConnStatus is compared via its
+// String() because the netbird peer package is internal to that module,
+// so its enum constants are not importable here — only the field values
+// on the returned FullStatus are.
+func (n *Netbird) Peers() ([]PeerStatus, error) {
+	n.mu.Lock()
+	client := n.client
+	n.mu.Unlock()
+	if client == nil {
+		return nil, nil
+	}
+	fs, err := client.Status()
+	if err != nil {
+		return nil, fmt.Errorf("innermesh/netbird: client.Status: %w", err)
+	}
+	out := make([]PeerStatus, 0, len(fs.Peers))
+	for _, p := range fs.Peers {
+		out = append(out, PeerStatus{
+			IP:            p.IP,
+			PubKey:        p.PubKey,
+			FQDN:          p.FQDN,
+			Connected:     p.ConnStatus.String() == "Connected",
+			Relayed:       p.Relayed,
+			LocalICEType:  p.LocalIceCandidateType,
+			RemoteICEType: p.RemoteIceCandidateType,
+			RelayAddress:  p.RelayServerAddress,
+			LastHandshake: p.LastWireguardHandshake,
+			BytesRx:       uint64(p.BytesRx),
+			BytesTx:       uint64(p.BytesTx),
+			Latency:       p.Latency,
+		})
+	}
+	return out, nil
+}
+
 // Logs returns the most recent tail log lines from the ring buffer
 // fed by netbird's logrus output.
 func (n *Netbird) Logs(tail int) []string {

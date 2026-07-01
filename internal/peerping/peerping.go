@@ -2,7 +2,7 @@
 // over the tunnel and keeps a rolling per-peer history for a latency
 // graph. It is the client-side latency source behind goat-client's
 // connectivity-check panel (design: goat-client-connectivity-and-filedrop,
-// ADR 1061 in the DesertBreadBird core repo).
+// ADR 1063 in the DesertBreadBird core repo).
 //
 // It is the peer-to-peer analog of internal/reachability, but a
 // deliberately different contract: reachability probes wg-cp0 relay
