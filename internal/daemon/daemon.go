@@ -21,7 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,6 +111,17 @@ type Config struct {
 	// CAP_NET_ADMIN/root). Tests pass a fake that records calls and
 	// reports StateUp without touching the OS network stack.
 	TunnelFactory func() TunnelManager
+
+	// PeerConnFactory builds the peerping subsystem for a given Responder
+	// bind address (the local tunnel IP + port, or "" to run
+	// outbound-only). nil means the real peerping.Manager; tests inject a
+	// fake to drive the reconcile loop without binding real sockets.
+	PeerConnFactory func(bindAddr string) peerConnController
+
+	// PeerConnReconcileInterval is how often the peerping reconcile loop
+	// re-checks whether the subsystem should run and refreshes its target
+	// set. 0 means the default (a few seconds); tests set it low.
+	PeerConnReconcileInterval time.Duration
 }
 
 // Daemon is the long-lived orchestrator. Safe for concurrent use by the
@@ -116,32 +129,42 @@ type Config struct {
 type Daemon struct {
 	cfg Config
 
-	mu            sync.RWMutex
-	currentMode   mode.Mode
-	currentBundle *bundle.EnrollmentBundle
-	currentSlug   string // active profile slug; "" when no profile loaded
-	manager       TunnelManager
-	mesh          innermesh.Mesh
-	dnsAdapter    tunneldns.Adapter
-	startedAt     time.Time
-	lastConnect   time.Time
-	lastErr       error
-	logTail       []string
-	logIdx        int
-	meshFactory   func() innermesh.Mesh
-	tunnelFactory func() TunnelManager
-	store         *profile.Store
-	peerConn      peerConnSource
+	mu              sync.RWMutex
+	currentMode     mode.Mode
+	currentBundle   *bundle.EnrollmentBundle
+	currentSlug     string // active profile slug; "" when no profile loaded
+	manager         TunnelManager
+	mesh            innermesh.Mesh
+	dnsAdapter      tunneldns.Adapter
+	startedAt       time.Time
+	lastConnect     time.Time
+	lastErr         error
+	logTail         []string
+	logIdx          int
+	meshFactory     func() innermesh.Mesh
+	tunnelFactory   func() TunnelManager
+	store           *profile.Store
+	peerConn        peerConnSource
+	peerConnFactory func(bindAddr string) peerConnController
 }
 
 // peerConnSource supplies live per-peer RTT keyed by peer IP for
-// GetPeerConnectivity. Satisfied by *peerping.Manager. It is nil until the
-// connectivity subsystem is wired to the mesh lifecycle (a follow-up
-// increment); while nil, GetPeerConnectivity still serves the per-peer
-// direct/relayed badge + identity from the inner-mesh status, with RTT
-// reported as not-yet-measured.
+// GetPeerConnectivity. While nil (inner mesh down, or a mode without it),
+// GetPeerConnectivity still serves the per-peer direct/relayed badge +
+// identity from the inner-mesh status, with RTT reported as not-yet-measured.
 type peerConnSource interface {
 	Snapshot() map[string]peerping.Stats
+}
+
+// peerConnController is the peerping subsystem the daemon's reconcile loop
+// owns: started once, told which peers to measure, read for a snapshot,
+// stopped on teardown. *peerping.Manager satisfies it; tests inject a fake
+// to drive the loop without binding real sockets.
+type peerConnController interface {
+	Start(ctx context.Context) error
+	SetTargets([]peerping.Target)
+	Snapshot() map[string]peerping.Stats
+	Stop()
 }
 
 // New constructs a Daemon. Side-effect-free until LoadPersistedBundle /
@@ -167,6 +190,17 @@ func New(cfg Config) (*Daemon, error) {
 	tunnelFactory := cfg.TunnelFactory
 	if tunnelFactory == nil {
 		tunnelFactory = func() TunnelManager { return tunnel.NewManager() }
+	}
+	peerConnFactory := cfg.PeerConnFactory
+	if peerConnFactory == nil {
+		peerConnFactory = func(bindAddr string) peerConnController {
+			return peerping.NewManager(peerping.ManagerConfig{
+				BindAddr: bindAddr,
+				Interval: peerping.DefaultInterval,
+				Timeout:  peerping.DefaultTimeout,
+				History:  peerping.DefaultHistory,
+			})
+		}
 	}
 	// Resolve initial mode: explicit override > config file > Default.
 	resolved := cfg.InitialMode
@@ -204,15 +238,16 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		cfg:           cfg,
-		currentMode:   resolved,
-		manager:       tunnelFactory(),
-		dnsAdapter:    dnsAdapter,
-		startedAt:     time.Now(),
-		logTail:       make([]string, cfg.LogTailSize),
-		meshFactory:   meshFactory,
-		tunnelFactory: tunnelFactory,
-		store:         store,
+		cfg:             cfg,
+		currentMode:     resolved,
+		manager:         tunnelFactory(),
+		dnsAdapter:      dnsAdapter,
+		startedAt:       time.Now(),
+		logTail:         make([]string, cfg.LogTailSize),
+		meshFactory:     meshFactory,
+		tunnelFactory:   tunnelFactory,
+		store:           store,
+		peerConnFactory: peerConnFactory,
 	}
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()
@@ -302,7 +337,93 @@ func (d *Daemon) ServeIPC(ctx context.Context) error {
 	defer ln.Close()
 	server := ipc.NewServer(d, d.cfg.TrustedUid)
 	d.logf("ipc listening on %s", d.cfg.SocketPath)
+	go d.runPeerConn(ctx)
 	return server.Serve(ctx, ln)
+}
+
+// runPeerConn owns the peerping subsystem's lifecycle for the daemon's
+// lifetime. It turns the subsystem on when the current mode includes the
+// inner mesh and the mesh is up (binding the echo Responder to the local
+// tunnel IP), feeds it the live peer set, and turns it off otherwise.
+// Blocks until ctx is cancelled; started as a goroutine by ServeIPC.
+func (d *Daemon) runPeerConn(ctx context.Context) {
+	interval := d.cfg.PeerConnReconcileInterval
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	var (
+		ctrl   peerConnController
+		cancel context.CancelFunc
+	)
+	stop := func() {
+		if ctrl != nil {
+			cancel()
+			ctrl.Stop()
+			ctrl = nil
+			d.setPeerConn(nil)
+		}
+	}
+	defer stop()
+
+	reconcile := func() {
+		d.mu.RLock()
+		mesh := d.mesh
+		m := d.currentMode
+		d.mu.RUnlock()
+
+		if mesh == nil || !m.IncludesNetbird() || mesh.State() != innermesh.StateUp {
+			stop()
+			return
+		}
+		if ctrl == nil {
+			bind := ""
+			if localIP, err := mesh.LocalIP(); err == nil && localIP != "" {
+				bind = net.JoinHostPort(localIP, strconv.Itoa(peerping.DefaultPort))
+			}
+			cctx, ccancel := context.WithCancel(ctx)
+			c := d.peerConnFactory(bind)
+			if err := c.Start(cctx); err != nil {
+				ccancel()
+				d.logf("peerping start: %v", err)
+				return
+			}
+			ctrl, cancel = c, ccancel
+			d.setPeerConn(c)
+		}
+		peers, err := mesh.Peers()
+		if err != nil {
+			d.logf("peerping targets: %v", err)
+			return
+		}
+		targets := make([]peerping.Target, 0, len(peers))
+		for _, p := range peers {
+			if p.IP != "" {
+				targets = append(targets, peerping.Target{IP: p.IP})
+			}
+		}
+		ctrl.SetTargets(targets)
+	}
+
+	reconcile()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			reconcile()
+		}
+	}
+}
+
+// setPeerConn publishes (or clears, on nil) the peerping subsystem as the
+// RTT source GetPeerConnectivity reads.
+func (d *Daemon) setPeerConn(c peerConnSource) {
+	d.mu.Lock()
+	d.peerConn = c
+	d.mu.Unlock()
 }
 
 // Shutdown takes the tunnel down + closes the manager.

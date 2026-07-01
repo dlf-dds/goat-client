@@ -128,6 +128,16 @@ func (f *Fake) Peers() ([]PeerStatus, error) {
 	return out, nil
 }
 
+// LocalIP returns a synthetic local overlay IP when up, "" otherwise.
+func (f *Fake) LocalIP() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.state != StateUp {
+		return "", nil
+	}
+	return "100.92.0.1", nil
+}
+
 // Logs returns up to tail trailing log lines from the in-memory ring
 // buffer. tail <= 0 returns the entire buffer.
 func (f *Fake) Logs(tail int) []string {
