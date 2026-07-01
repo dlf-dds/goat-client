@@ -185,6 +185,21 @@ func (c *realClient) GetPeerConnectivity(ctx context.Context) ([]PeerConnectivit
 	return reply.Peers, nil
 }
 
+func (c *realClient) GetIncomingFiles(ctx context.Context) ([]IncomingFile, error) {
+	var reply GetIncomingFilesReply
+	if err := c.rpc.call(MethodGetIncomingFiles, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		return nil, err
+	}
+	return reply.Files, nil
+}
+
+func (c *realClient) SendFile(ctx context.Context, peer, path string) (SendFileReply, error) {
+	var reply SendFileReply
+	// Large files bound by the tunnel, not the app; give the transfer room.
+	err := c.rpc.call(MethodSendFile, SendFileRequest{Peer: peer, Path: path}, &reply, 30*time.Minute)
+	return reply, err
+}
+
 func (c *realClient) Connect(ctx context.Context) error {
 	return c.rpc.call(MethodConnect, EmptyRequest{}, nil, 30*time.Second)
 }

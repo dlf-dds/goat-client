@@ -144,6 +144,14 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 	case MethodGetIncomingFiles:
 		out, err := d.h.GetIncomingFiles(ctx)
 		fillResult(&resp, out, err)
+	case MethodSendFile:
+		var p SendFileRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.SendFile(ctx, p)
+		fillResult(&resp, out, err)
 	case MethodSetInnerMeshProfile:
 		var p SetInnerMeshProfileRequest
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -215,7 +223,8 @@ func isMutating(m Method) bool {
 	switch m {
 	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode,
 		MethodSetInnerMeshProfile, MethodEnableInnerMesh, MethodDisableInnerMesh,
-		MethodAddProfile, MethodRemoveProfile, MethodRenameProfile, MethodSetActiveProfile:
+		MethodAddProfile, MethodRemoveProfile, MethodRenameProfile, MethodSetActiveProfile,
+		MethodSendFile:
 		return true
 	}
 	return false

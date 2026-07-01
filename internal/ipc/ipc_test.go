@@ -61,6 +61,8 @@ type fakeHandler struct {
 	innerDiagnosticsReply InnerMeshDiagnosticsReply
 	peerConnReply         GetPeerConnectivityReply
 	incomingReply         GetIncomingFilesReply
+	sendFileRecv          SendFileRequest
+	sendFileReply         SendFileReply
 }
 
 func (f *fakeHandler) ImportBundle(ctx context.Context, req ImportBundleRequest) (ImportBundleReply, error) {
@@ -123,6 +125,37 @@ func (f *fakeHandler) GetIncomingFiles(ctx context.Context) (GetIncomingFilesRep
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.incomingReply, nil
+}
+
+func (f *fakeHandler) SendFile(ctx context.Context, req SendFileRequest) (SendFileReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendFileRecv = req
+	return f.sendFileReply, nil
+}
+
+func TestDispatchSendFile(t *testing.T) {
+	h := &fakeHandler{sendFileReply: SendFileReply{Name: "report.pdf", Size: 1234, ToPeer: "alpha.goat", ToIP: "100.92.0.11"}}
+	socket, srv := startServer(t, h)
+	defer srv.Close()
+	conn, err := Dial(socket)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	cli := newRPCClient(conn)
+	defer cli.Close()
+
+	var reply SendFileReply
+	err = cli.call(MethodSendFile, SendFileRequest{Peer: "alpha.goat", Path: "/tmp/report.pdf"}, &reply, 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendFile: %v", err)
+	}
+	if reply.Name != "report.pdf" || reply.Size != 1234 || reply.ToPeer != "alpha.goat" {
+		t.Errorf("reply round-trip mismatch: %+v", reply)
+	}
+	if h.sendFileRecv.Peer != "alpha.goat" || h.sendFileRecv.Path != "/tmp/report.pdf" {
+		t.Errorf("handler received %+v, want the sent request", h.sendFileRecv)
+	}
 }
 
 func TestDispatchGetPeerConnectivity(t *testing.T) {

@@ -67,6 +67,7 @@ var knownSubcommands = map[string]bool{
 	"connect":    true,
 	"disconnect": true,
 	"status":     true,
+	"send":       true,
 	"help":       true,
 }
 
@@ -121,6 +122,8 @@ func dispatchSubcommand(name string, args []string, defaultDaemonAddr string) in
 		return runDisconnect(args, defaultDaemonAddr)
 	case "status":
 		return runStatus(args, defaultDaemonAddr)
+	case "send":
+		return runSend(args, defaultDaemonAddr)
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -142,6 +145,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  goat-client connect               bring the active mode's subsystems up")
 	fmt.Fprintln(w, "  goat-client disconnect            tear the active mode's subsystems down")
 	fmt.Fprintln(w, "  goat-client status                print the current status snapshot")
+	fmt.Fprintln(w, "  goat-client send <peer> <file>    drop a file to an inner-mesh peer (goatdrop)")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Modes: wg-cp0-only | netbird-only | combined")
 	fmt.Fprintln(w)
@@ -290,5 +294,42 @@ func runStatus(args []string, defaultDaemonAddr string) int {
 	if st.ErrorMessage != "" {
 		fmt.Fprintf(os.Stdout, "error:          %s\n", st.ErrorMessage)
 	}
+	return 0
+}
+
+// runSend drops a local file to an inner-mesh peer via goatdrop:
+//
+//	goat-client send <peer> <file>
+//
+// <peer> is the peer's overlay IP or its mesh name; <file> is a local path
+// the daemon can read.
+func runSend(args []string, defaultDaemonAddr string) int {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	daemonAddr := fs.String("daemon-addr", defaultDaemonAddr, "goat-clientd IPC address")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: goat-client send <peer> <file>")
+		return 2
+	}
+	peer, path := rest[0], rest[1]
+
+	client, err := ipc.NewClient(*daemonAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "send: dial daemon: %v\n", err)
+		return 1
+	}
+	defer client.Close()
+	// The tunnel, not the app, bounds a large transfer; give it room.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	res, err := client.SendFile(ctx, peer, path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "send: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stdout, "sent %s (%d bytes) to %s\n", res.Name, res.Size, res.ToPeer)
 	return 0
 }

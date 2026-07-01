@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,6 +155,48 @@ func (d *Daemon) runFileServer(ctx context.Context) {
 			reconcile()
 		}
 	}
+}
+
+// SendFile drops a local file to an inner-mesh peer. It resolves req.Peer
+// (an overlay IP or a mesh FQDN) to the peer's tunnel IP via the live peer
+// list, then PUTs the file to that peer's goatdrop server. Errors when the
+// mode has no inner mesh or the peer is unknown.
+func (d *Daemon) SendFile(ctx context.Context, req ipc.SendFileRequest) (ipc.SendFileReply, error) {
+	d.mu.RLock()
+	mesh := d.mesh
+	m := d.currentMode
+	d.mu.RUnlock()
+	if mesh == nil || !m.IncludesNetbird() {
+		return ipc.SendFileReply{}, fmt.Errorf("sendFile: mode %q has no inner mesh", m)
+	}
+	peers, err := mesh.Peers()
+	if err != nil {
+		return ipc.SendFileReply{}, fmt.Errorf("sendFile: peer list: %w", err)
+	}
+	ip, label, ok := resolvePeer(peers, req.Peer)
+	if !ok {
+		return ipc.SendFileReply{}, fmt.Errorf("sendFile: no inner-mesh peer matches %q", req.Peer)
+	}
+	res, err := filedrop.SendFile(ctx, filedrop.PeerAddr(ip, filedrop.DefaultPort), req.Path)
+	if err != nil {
+		return ipc.SendFileReply{}, err
+	}
+	return ipc.SendFileReply{Name: res.Name, Size: res.Size, ToPeer: label, ToIP: ip}, nil
+}
+
+// resolvePeer matches an identifier (overlay IP or FQDN, case-insensitive)
+// against the peer list, returning the peer's IP + a display label.
+func resolvePeer(peers []innermesh.PeerStatus, id string) (ip, label string, ok bool) {
+	for _, p := range peers {
+		if p.IP == id || (p.FQDN != "" && strings.EqualFold(p.FQDN, id)) {
+			lbl := p.FQDN
+			if lbl == "" {
+				lbl = p.IP
+			}
+			return p.IP, lbl, true
+		}
+	}
+	return "", "", false
 }
 
 // GetIncomingFiles lists recent goatdrop transfers, newest first.

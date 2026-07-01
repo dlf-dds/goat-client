@@ -62,6 +62,11 @@ type fakeClient struct {
 	peerConn     []ipc.PeerConnectivity
 	peerConnErr  error
 	peerConnCall int
+
+	incoming      []ipc.IncomingFile
+	sendFileReply ipc.SendFileReply
+	sendFileErr   error
+	sendFileCalls [][2]string
 }
 
 func newFakeClient() *fakeClient {
@@ -112,6 +117,24 @@ func (c *fakeClient) GetPeerConnectivity(_ context.Context) ([]ipc.PeerConnectiv
 	out := make([]ipc.PeerConnectivity, len(c.peerConn))
 	copy(out, c.peerConn)
 	return out, nil
+}
+
+func (c *fakeClient) GetIncomingFiles(_ context.Context) ([]ipc.IncomingFile, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]ipc.IncomingFile, len(c.incoming))
+	copy(out, c.incoming)
+	return out, nil
+}
+
+func (c *fakeClient) SendFile(_ context.Context, peer, path string) (ipc.SendFileReply, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendFileCalls = append(c.sendFileCalls, [2]string{peer, path})
+	if c.sendFileErr != nil {
+		return ipc.SendFileReply{}, c.sendFileErr
+	}
+	return c.sendFileReply, nil
 }
 
 func (c *fakeClient) Disconnect(_ context.Context) error {
