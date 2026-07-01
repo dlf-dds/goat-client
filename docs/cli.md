@@ -67,8 +67,25 @@ goat-client setmode <mode>        switch the daemon to <mode>
 goat-client connect               bring the active mode's subsystems up
 goat-client disconnect            tear the active mode's subsystems down
 goat-client status                print the current status snapshot
+goat-client send <peer> <file>    drop a file to an inner-mesh peer (goatdrop)
 goat-client help                  print usage
 ```
+
+### `send` (goatdrop)
+
+Drop a file straight to an inner-mesh peer over the tunnel:
+
+```text
+$ goat-client send alpha.goat ./report.pdf
+sent report.pdf (188416 bytes) to alpha.goat
+```
+
+`<peer>` is an inner-mesh peer's overlay IP or FQDN (case-insensitive, e.g.
+`100.92.0.11` or `alpha.goat`); `<file>` is a local path. The receiver's
+daemon accepts the drop only if the sender's overlay IP resolves to a live
+netbird peer (fail-closed — no separate token), and writes it to
+`~/.goat-client/inbox` by default. Requires `netbird-only` or `combined`
+mode (there's no inner mesh in `wg-cp0-only`).
 
 All subcommands talk to the daemon's IPC socket. If the daemon isn't
 running, you'll get a `dial daemon` error — start the service first.

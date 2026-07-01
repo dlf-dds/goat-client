@@ -30,21 +30,21 @@ The bundle is single-use-by-policy but technically reusable until `not-after`; r
 
 ## 2. End-user installs goat-client
 
-Pick the package from the [v0.2.0 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.2.0). The full install + cosign-verify recipes live in the [README](../README.md#install). Short form:
+Pick the package from the [v0.3.0 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.0). The full install + cosign-verify recipes live in the [README](../README.md#install). Short form:
 
 ```bash
 # Linux (Debian / Ubuntu)
-sudo dpkg -i goat-client_0.2.0_amd64.deb
+sudo dpkg -i goat-client_0.3.0_amd64.deb
 
 # Linux (Fedora / RHEL)
-sudo dnf install ./goat-client-0.2.0-1.x86_64.rpm
+sudo dnf install ./goat-client-0.3.0-1.x86_64.rpm
 
 # macOS
-hdiutil attach goat-client-0.2.0-arm64.dmg && \
+hdiutil attach goat-client-0.3.0-arm64.dmg && \
   sudo installer -pkg "/Volumes/goat-client/goat-client.pkg" -target /
 
 # Windows (PowerShell, elevated)
-msiexec /i goat-client-0.2.0-amd64.msi /qn
+msiexec /i goat-client-0.3.0-amd64.msi /qn
 ```
 
 The daemon (`goat-clientd`) auto-starts as a system service on all three platforms and idles waiting for a bundle.
