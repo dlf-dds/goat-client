@@ -52,8 +52,13 @@ func TestEchoRoundTripReal(t *testing.T) {
 	if s.Lost {
 		t.Fatalf("real loopback probe was Lost, want a hit")
 	}
-	if s.RTT <= 0 {
-		t.Fatalf("real loopback RTT = %v, want > 0", s.RTT)
+	// RTT must be non-negative. It can legitimately be exactly 0 on
+	// platforms whose monotonic clock is coarser than the round trip
+	// (Windows time.Now() has ~1ms resolution, and a loopback echo is
+	// faster than that) — a 0 reading is a valid sub-resolution
+	// measurement, not a failure. The success signal is !Lost, above.
+	if s.RTT < 0 {
+		t.Fatalf("real loopback RTT = %v, want >= 0", s.RTT)
 	}
 	if s.Seq != 1 {
 		t.Fatalf("Seq = %d, want 1", s.Seq)
@@ -127,7 +132,11 @@ func TestRunFeedsRing(t *testing.T) {
 	if st.Lost != 0 {
 		t.Fatalf("loopback Run recorded %d losses, want 0", st.Lost)
 	}
-	if st.Avg <= 0 {
-		t.Fatalf("Stats.Avg = %v, want > 0", st.Avg)
+	// Avg is non-negative; it can be 0 when every loopback round trip
+	// measured under the platform's clock resolution (see the RTT note in
+	// TestEchoRoundTripReal). The signal here is samples accumulating with
+	// no loss, not a positive average.
+	if st.Avg < 0 {
+		t.Fatalf("Stats.Avg = %v, want >= 0", st.Avg)
 	}
 }
