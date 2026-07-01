@@ -82,6 +82,7 @@ func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
 		mw.settingsPane.Refresh()
 	})
 	mw.devicesPane = newDevicesPane(client)
+	mw.devicesPane.SetWindow(w)
 
 	mw.tabs = container.NewAppTabs(
 		container.NewTabItem("Bundle", mw.bundlePane.Content()),
