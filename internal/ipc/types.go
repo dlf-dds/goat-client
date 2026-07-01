@@ -27,17 +27,17 @@ const (
 // InterfaceName / etc. continue to describe the wg-cp0 outer tunnel;
 // InnerMesh describes the inner-mesh leg when present.
 type StatusInfo struct {
-	Mode           string       `json:"mode,omitempty"`
-	State          State        `json:"state"`
-	InterfaceName  string       `json:"interface_name,omitempty"`
-	LastHandshake  time.Time    `json:"last_handshake,omitempty"`
-	BytesIn        uint64       `json:"bytes_in,omitempty"`
-	BytesOut       uint64       `json:"bytes_out,omitempty"`
-	PeerPubKey     string       `json:"peer_pubkey,omitempty"`
-	Endpoints      []string     `json:"endpoints,omitempty"`
-	BundleImported bool         `json:"bundle_imported"`
-	Bundle         *BundleInfo  `json:"bundle,omitempty"`
-	ErrorMessage   string       `json:"error_message,omitempty"`
+	Mode           string         `json:"mode,omitempty"`
+	State          State          `json:"state"`
+	InterfaceName  string         `json:"interface_name,omitempty"`
+	LastHandshake  time.Time      `json:"last_handshake,omitempty"`
+	BytesIn        uint64         `json:"bytes_in,omitempty"`
+	BytesOut       uint64         `json:"bytes_out,omitempty"`
+	PeerPubKey     string         `json:"peer_pubkey,omitempty"`
+	Endpoints      []string       `json:"endpoints,omitempty"`
+	BundleImported bool           `json:"bundle_imported"`
+	Bundle         *BundleInfo    `json:"bundle,omitempty"`
+	ErrorMessage   string         `json:"error_message,omitempty"`
 	InnerMesh      *InnerMeshInfo `json:"inner_mesh,omitempty"`
 }
 
@@ -139,6 +139,11 @@ type Client interface {
 	// polling surface than GetStatus for the tray submenu's
 	// checkmark.
 	GetActiveProfile(ctx context.Context) (active ProfileInfo, hasAny bool, err error)
+
+	// GetPeerConnectivity returns one line per inner-mesh peer for the
+	// Devices pane's connectivity check — the direct/relayed badge +
+	// identity joined with live RTT. Empty in modes without the inner mesh.
+	GetPeerConnectivity(ctx context.Context) ([]PeerConnectivity, error)
 
 	// Close releases any underlying transport resources.
 	Close() error

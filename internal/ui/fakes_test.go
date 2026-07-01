@@ -58,6 +58,10 @@ type fakeClient struct {
 	setActiveErr        error
 	getActiveProfile    *ipc.ProfileInfo
 	getActiveProfileErr error
+
+	peerConn     []ipc.PeerConnectivity
+	peerConnErr  error
+	peerConnCall int
 }
 
 func newFakeClient() *fakeClient {
@@ -96,6 +100,18 @@ func (c *fakeClient) Connect(_ context.Context) error {
 	defer c.mu.Unlock()
 	c.connectCalls++
 	return c.connectErr
+}
+
+func (c *fakeClient) GetPeerConnectivity(_ context.Context) ([]ipc.PeerConnectivity, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.peerConnCall++
+	if c.peerConnErr != nil {
+		return nil, c.peerConnErr
+	}
+	out := make([]ipc.PeerConnectivity, len(c.peerConn))
+	copy(out, c.peerConn)
+	return out, nil
 }
 
 func (c *fakeClient) Disconnect(_ context.Context) error {

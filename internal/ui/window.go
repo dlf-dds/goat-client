@@ -33,6 +33,7 @@ type mainWindow struct {
 	bundlePane   *bundlePane
 	profilesPane *profilesPane
 	settingsPane *settingsPane
+	devicesPane  *devicesPane
 	tabs         *container.AppTabs
 	pollCancel   context.CancelFunc
 }
@@ -80,10 +81,12 @@ func newMainWindow(a fyne.App, client ipc.Client) *mainWindow {
 		mw.statusPane.Refresh()
 		mw.settingsPane.Refresh()
 	})
+	mw.devicesPane = newDevicesPane(client)
 
 	mw.tabs = container.NewAppTabs(
 		container.NewTabItem("Bundle", mw.bundlePane.Content()),
 		container.NewTabItem("Status", mw.statusPane.Content()),
+		container.NewTabItem("Devices", mw.devicesPane.Content()),
 		container.NewTabItem("Profiles", mw.profilesPane.Content()),
 		container.NewTabItem("Settings", mw.settingsPane.Content()),
 		container.NewTabItem("Diagnostics", mw.diagsPane.Content()),
@@ -157,16 +160,21 @@ func (m *mainWindow) pollOnce(ctx context.Context) {
 			case 1:
 				m.statusPane.apply(st)
 			case 2:
+				// Devices tab — poll the live connectivity set so the
+				// latency series advances. Fetch off-main (Refresh
+				// marshals its widget mutations back via fyne.Do).
+				go m.devicesPane.Refresh()
+			case 3:
 				// Profiles tab — fresh list each tick lets the user
 				// see external mutations (CLI add/remove, another
 				// session's actions). Cheap; lists rarely exceed
 				// a handful of entries.
 				go m.profilesPane.Refresh()
-			case 3:
+			case 4:
 				// Settings tab; refresh radio if mode drifted from
 				// daemon's view (e.g. CLI setmode in another terminal).
 				m.settingsPane.Refresh()
-			case 4:
+			case 5:
 				m.diagsPane.Refresh()
 			}
 		}

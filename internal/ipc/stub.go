@@ -311,6 +311,12 @@ func (c *stubClient) GetActiveProfile(ctx context.Context) (ProfileInfo, bool, e
 	return cur, true, nil
 }
 
+// GetPeerConnectivity returns no peers: the stub client has no inner-mesh
+// subsystem to measure. The real daemon serves the live set.
+func (c *stubClient) GetPeerConnectivity(ctx context.Context) ([]PeerConnectivity, error) {
+	return nil, nil
+}
+
 // stubSlugify mirrors the production profile.Slugify shape (the stub
 // doesn't import internal/profile to avoid a cycle: stub clients are
 // the GUI-side stand-in, and the GUI doesn't need the full store).
