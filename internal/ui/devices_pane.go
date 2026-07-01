@@ -3,10 +3,15 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/dlf-dds/goat-client/internal/ipc"
@@ -42,7 +47,18 @@ type devicesPane struct {
 	emptyNote    *widget.Label
 	errorMessage *widget.Label
 	root         fyne.CanvasObject
+
+	// goatdrop widgets
+	window     fyne.Window
+	sendBtn    *widget.Button
+	sendStatus *widget.Label
+	received   []ipc.IncomingFile
+	recvLabel  *widget.Label
 }
+
+// SetWindow wires the pane to its parent window so the file picker + error
+// dialogs have a parent. Called by the window before first show.
+func (p *devicesPane) SetWindow(w fyne.Window) { p.window = w }
 
 func newDevicesPane(client ipc.Client) *devicesPane {
 	p := &devicesPane{
@@ -56,10 +72,15 @@ func newDevicesPane(client ipc.Client) *devicesPane {
 		chart:        newLatencyChart(),
 		emptyNote:    widget.NewLabel("No inner-mesh peers. The connectivity check is available in netbird-only / combined modes once the mesh is up."),
 		errorMessage: widget.NewLabel(""),
+		sendStatus:   widget.NewLabel(""),
+		recvLabel:    widget.NewLabel("none yet"),
 	}
 	p.emptyNote.Wrapping = fyne.TextWrapWord
 	p.errorMessage.Wrapping = fyne.TextWrapWord
 	p.detailIdent.Wrapping = fyne.TextWrapWord
+	p.sendStatus.Wrapping = fyne.TextWrapWord
+	p.recvLabel.Wrapping = fyne.TextWrapWord
+	p.sendBtn = widget.NewButton("Send file…", func() { p.openSendPicker() })
 
 	p.list = widget.NewList(
 		func() int { return len(p.peers) },
@@ -77,12 +98,15 @@ func newDevicesPane(client ipc.Client) *devicesPane {
 	}
 
 	chartCard := widget.NewCard("Latency", "round-trip time, most recent on the right", p.chart)
+	dropCard := widget.NewCard("File drop (goatdrop)", "send a file to this peer over the mesh",
+		container.NewVBox(p.sendBtn, p.sendStatus))
 	p.detailWrap = container.NewVBox(
 		p.detailName,
 		p.detailBadge,
 		p.detailIdent,
 		p.detailRTT,
 		chartCard,
+		dropCard,
 	)
 
 	// Left: roster list. Right: detail (or an empty note when no peers).
@@ -90,8 +114,9 @@ func newDevicesPane(client ipc.Client) *devicesPane {
 	split := container.NewHSplit(p.list, container.NewStack(detailScroll, p.emptyNote))
 	split.Offset = 0.32
 
+	recvCard := widget.NewCard("Received (goatdrop)", "", p.recvLabel)
 	refresh := widget.NewButton("Refresh", func() { p.Refresh() })
-	footer := container.NewVBox(p.errorMessage, refresh)
+	footer := container.NewVBox(recvCard, p.errorMessage, refresh)
 	p.root = container.NewBorder(nil, footer, nil, nil, split)
 
 	p.showEmpty(true)
@@ -116,10 +141,94 @@ func (p *devicesPane) Refresh() {
 		fyne.Do(func() { p.errorMessage.SetText("Failed to fetch connectivity: " + err.Error()) })
 		return
 	}
+	incoming, ierr := p.client.GetIncomingFiles(ctx)
 	fyne.Do(func() {
 		p.errorMessage.SetText("")
 		p.apply(peers)
+		if ierr == nil {
+			p.received = incoming
+			p.renderReceived()
+		}
 	})
+}
+
+// openSendPicker prompts for a local file and drops it to the selected
+// peer over goatdrop. The daemon reads the file by path (both run on this
+// host), so only the path is needed, not the bytes.
+func (p *devicesPane) openSendPicker() {
+	if p.window == nil || p.selected < 0 || p.selected >= len(p.peers) {
+		return
+	}
+	peer := p.peers[p.selected]
+	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, p.window)
+			return
+		}
+		if rc == nil {
+			return
+		}
+		path := rc.URI().Path()
+		_ = rc.Close()
+		p.sendStatus.SetText("Sending " + filepath.Base(path) + "…")
+		go p.sendFileTo(peer, path)
+	}, p.window)
+	if home, err := os.UserHomeDir(); err == nil {
+		if uri, err := storage.ListerForURI(storage.NewFileURI(home)); err == nil {
+			d.SetLocation(uri)
+		}
+	}
+	d.Show()
+}
+
+// sendFileTo drops path to peer via the daemon, then reports the outcome in
+// the send-status label. Blocks on the transfer; openSendPicker runs it in a
+// goroutine, and widget mutations are marshalled back via fyne.Do.
+func (p *devicesPane) sendFileTo(peer ipc.PeerConnectivity, path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	res, err := p.client.SendFile(ctx, peer.IP, path)
+	fyne.Do(func() {
+		if err != nil {
+			p.sendStatus.SetText("Send failed: " + err.Error())
+			return
+		}
+		p.sendStatus.SetText(fmt.Sprintf("Sent %s (%d bytes) to %s", res.Name, res.Size, peerName(peer)))
+	})
+}
+
+// renderReceived renders the recent-inbound list (capped) into recvLabel.
+func (p *devicesPane) renderReceived() {
+	if len(p.received) == 0 {
+		p.recvLabel.SetText("none yet")
+		return
+	}
+	var b strings.Builder
+	for i, f := range p.received {
+		if i >= 8 {
+			break
+		}
+		from := f.From
+		if from == "" {
+			from = f.FromIP
+		}
+		fmt.Fprintf(&b, "%s (%s) — from %s\n", f.Name, humanSize(f.Size), from)
+	}
+	p.recvLabel.SetText(strings.TrimRight(b.String(), "\n"))
+}
+
+// humanSize renders a byte count compactly (B / KB / MB / GB).
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // apply updates the pane from a fresh peer set.
