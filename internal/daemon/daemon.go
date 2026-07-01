@@ -30,6 +30,7 @@ import (
 	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
+	"github.com/dlf-dds/goat-client/internal/peerping"
 	"github.com/dlf-dds/goat-client/internal/profile"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
 	tunneldns "github.com/dlf-dds/goat-client/internal/tunnel/dns"
@@ -130,6 +131,17 @@ type Daemon struct {
 	meshFactory   func() innermesh.Mesh
 	tunnelFactory func() TunnelManager
 	store         *profile.Store
+	peerConn      peerConnSource
+}
+
+// peerConnSource supplies live per-peer RTT keyed by peer IP for
+// GetPeerConnectivity. Satisfied by *peerping.Manager. It is nil until the
+// connectivity subsystem is wired to the mesh lifecycle (a follow-up
+// increment); while nil, GetPeerConnectivity still serves the per-peer
+// direct/relayed badge + identity from the inner-mesh status, with RTT
+// reported as not-yet-measured.
+type peerConnSource interface {
+	Snapshot() map[string]peerping.Stats
 }
 
 // New constructs a Daemon. Side-effect-free until LoadPersistedBundle /
@@ -618,6 +630,64 @@ func (d *Daemon) GetInnerMeshStatus(_ context.Context) (ipc.InnerMeshSnapshot, e
 	return snap, nil
 }
 
+// GetPeerConnectivity backs the connectivity-check panel. It joins the
+// per-peer direct/relayed badge + identity from the inner-mesh status with
+// live RTT from the peerping subsystem (keyed by peer IP). In modes without
+// the inner mesh, or when the mesh is down, it returns an empty peer list.
+// When the peerping subsystem is not running (or has no samples yet for a
+// peer), that peer's Measured stays false and its RTT fields stay zero —
+// the panel shows the badge without a misleading latency.
+func (d *Daemon) GetPeerConnectivity(_ context.Context) (ipc.GetPeerConnectivityReply, error) {
+	d.mu.RLock()
+	mesh := d.mesh
+	m := d.currentMode
+	src := d.peerConn
+	d.mu.RUnlock()
+
+	var reply ipc.GetPeerConnectivityReply
+	if mesh == nil || !m.IncludesNetbird() {
+		return reply, nil
+	}
+	peers, err := mesh.Peers()
+	if err != nil {
+		return reply, err
+	}
+	var rtt map[string]peerping.Stats
+	if src != nil {
+		rtt = src.Snapshot()
+	}
+	reply.Peers = make([]ipc.PeerConnectivity, 0, len(peers))
+	for _, p := range peers {
+		pc := ipc.PeerConnectivity{
+			IP:            p.IP,
+			FQDN:          p.FQDN,
+			PubKey:        p.PubKey,
+			Connected:     p.Connected,
+			Path:          p.Path(),
+			LocalICEType:  p.LocalICEType,
+			RemoteICEType: p.RemoteICEType,
+			RelayAddress:  p.RelayAddress,
+			LastHandshake: p.LastHandshake,
+			BytesRx:       p.BytesRx,
+			BytesTx:       p.BytesTx,
+		}
+		if st, ok := rtt[p.IP]; ok && st.N > 0 {
+			pc.Measured = true
+			pc.Samples = st.N
+			pc.LossPct = st.LossPct
+			pc.RTTLastMs = durMs(st.Last)
+			pc.RTTAvgMs = durMs(st.Avg)
+			pc.RTTMinMs = durMs(st.Min)
+			pc.RTTMaxMs = durMs(st.Max)
+		}
+		reply.Peers = append(reply.Peers, pc)
+	}
+	return reply, nil
+}
+
+// durMs renders a duration as fractional milliseconds for the wire.
+func durMs(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+
 // SetInnerMeshProfile applies an inner-mesh Config to the active
 // mesh. Requires the daemon's mode to include the inner mesh — the
 // GUI surfaces the "setMode first" condition from the returned error.
@@ -1004,14 +1074,14 @@ func (d *Daemon) GetActiveProfile(_ context.Context) (ipc.GetActiveProfileReply,
 // by SetActiveProfile + AddProfile{SetActive: true}. Returns the
 // previous active slug. Order of operations:
 //
-//   1. Load target profile (parses + adopts bundle bytes).
-//   2. Tear down all currently-running legs (DNS, outer, inner mesh).
-//   3. Adopt the new bundle + mode + slug atomically.
-//   4. Bring the new mode's legs up (best-effort; per-leg errors
-//      surface via Diagnostics).
-//   5. Write active.json LAST — a crash mid-bring-up leaves the
-//      previous active marker so the next start-up picks a profile
-//      whose state we already know.
+//  1. Load target profile (parses + adopts bundle bytes).
+//  2. Tear down all currently-running legs (DNS, outer, inner mesh).
+//  3. Adopt the new bundle + mode + slug atomically.
+//  4. Bring the new mode's legs up (best-effort; per-leg errors
+//     surface via Diagnostics).
+//  5. Write active.json LAST — a crash mid-bring-up leaves the
+//     previous active marker so the next start-up picks a profile
+//     whose state we already know.
 func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, error) {
 	target, err := d.store.Load(slug)
 	if err != nil {

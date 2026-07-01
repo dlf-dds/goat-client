@@ -56,6 +56,11 @@ const (
 	MethodDisableInnerMesh        Method = "disableInnerMesh"
 	MethodGetInnerMeshDiagnostics Method = "getInnerMeshDiagnostics"
 
+	// getPeerConnectivity backs the connectivity-check panel: per-peer
+	// direct/relayed badge + identity (from the inner-mesh status) joined
+	// with live RTT (from the peerping subsystem). Read-only.
+	MethodGetPeerConnectivity Method = "getPeerConnectivity"
+
 	// v0.2 multi-network methods (Block 76M). The profile store
 	// holds N bundles + a single active-profile pointer; setActive
 	// is the load-bearing "switch" call that tears down the
@@ -116,19 +121,19 @@ const (
 // the outer State + the InnerMesh sub-status are populated and the GUI
 // stacks two cards.
 type StatusReply struct {
-	Mode             string        `json:"mode,omitempty"`
-	State            TunnelState   `json:"state"`
-	BundleLoaded     bool          `json:"bundleLoaded"`
-	DeviceID         string        `json:"deviceID,omitempty"`
-	Site             string        `json:"site,omitempty"`
-	BundleExpiresAt  time.Time     `json:"bundleExpiresAt,omitempty"`
-	PeerPubkey       []byte        `json:"peerPubkey,omitempty"`
-	LastHandshake    time.Time     `json:"lastHandshake,omitempty"`
-	BytesIn          uint64        `json:"bytesIn"`
-	BytesOut         uint64        `json:"bytesOut"`
-	ConfiguredEndpoints []string   `json:"configuredEndpoints,omitempty"`
-	ErrorMessage     string        `json:"errorMessage,omitempty"`
-	InnerMesh        *InnerMeshSnapshot `json:"innerMesh,omitempty"`
+	Mode                string             `json:"mode,omitempty"`
+	State               TunnelState        `json:"state"`
+	BundleLoaded        bool               `json:"bundleLoaded"`
+	DeviceID            string             `json:"deviceID,omitempty"`
+	Site                string             `json:"site,omitempty"`
+	BundleExpiresAt     time.Time          `json:"bundleExpiresAt,omitempty"`
+	PeerPubkey          []byte             `json:"peerPubkey,omitempty"`
+	LastHandshake       time.Time          `json:"lastHandshake,omitempty"`
+	BytesIn             uint64             `json:"bytesIn"`
+	BytesOut            uint64             `json:"bytesOut"`
+	ConfiguredEndpoints []string           `json:"configuredEndpoints,omitempty"`
+	ErrorMessage        string             `json:"errorMessage,omitempty"`
+	InnerMesh           *InnerMeshSnapshot `json:"innerMesh,omitempty"`
 }
 
 // InnerMeshSnapshot is the inner-mesh subsystem's status surface. Mirrors
@@ -140,6 +145,44 @@ type InnerMeshSnapshot struct {
 	BytesIn       uint64      `json:"bytesIn"`
 	BytesOut      uint64      `json:"bytesOut"`
 	LastHandshake time.Time   `json:"lastHandshake,omitempty"`
+}
+
+// PeerConnectivity is one inner-mesh peer's line for the connectivity-check
+// panel: identity + the direct/relayed badge (from the inner-mesh status)
+// joined with live RTT (from the peerping subsystem, keyed by IP).
+//
+// The RTT fields are meaningful only when Measured is true. Measured is
+// false when the peerping subsystem has no samples yet for this peer — the
+// panel shows "—" rather than a misleading 0. RTT is NOT netbird's ICE
+// latency (stale, zero on the relay path); it is peerping's live series.
+type PeerConnectivity struct {
+	IP            string    `json:"ip"`
+	FQDN          string    `json:"fqdn,omitempty"`
+	PubKey        string    `json:"pubKey,omitempty"`
+	Connected     bool      `json:"connected"`
+	Path          string    `json:"path"` // "direct" | "relayed"
+	LocalICEType  string    `json:"localIceType,omitempty"`
+	RemoteICEType string    `json:"remoteIceType,omitempty"`
+	RelayAddress  string    `json:"relayAddress,omitempty"`
+	LastHandshake time.Time `json:"lastHandshake,omitempty"`
+	BytesRx       uint64    `json:"bytesRx"`
+	BytesTx       uint64    `json:"bytesTx"`
+
+	// Live RTT from peerping. Valid only when Measured.
+	Measured  bool    `json:"measured"`
+	Samples   int     `json:"samples,omitempty"`
+	LossPct   float64 `json:"lossPct,omitempty"`
+	RTTLastMs float64 `json:"rttLastMs,omitempty"`
+	RTTAvgMs  float64 `json:"rttAvgMs,omitempty"`
+	RTTMinMs  float64 `json:"rttMinMs,omitempty"`
+	RTTMaxMs  float64 `json:"rttMaxMs,omitempty"`
+}
+
+// GetPeerConnectivityReply is the connectivity-check panel's payload: one
+// line per inner-mesh peer. Empty when the mode excludes the inner mesh or
+// the mesh is down.
+type GetPeerConnectivityReply struct {
+	Peers []PeerConnectivity `json:"peers"`
 }
 
 // GetModeReply / SetModeRequest / SetModeReply carry the v0.2 mode
@@ -324,6 +367,9 @@ type Handler interface {
 	EnableInnerMesh(ctx context.Context) error
 	DisableInnerMesh(ctx context.Context) error
 	GetInnerMeshDiagnostics(ctx context.Context) (InnerMeshDiagnosticsReply, error)
+
+	// GetPeerConnectivity backs the connectivity-check panel. Read-only.
+	GetPeerConnectivity(ctx context.Context) (GetPeerConnectivityReply, error)
 
 	// v0.2 multi-network methods (Block 76M).
 	ListProfiles(ctx context.Context) (ListProfilesReply, error)
