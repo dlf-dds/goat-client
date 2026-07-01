@@ -141,6 +141,9 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 	case MethodGetPeerConnectivity:
 		out, err := d.h.GetPeerConnectivity(ctx)
 		fillResult(&resp, out, err)
+	case MethodGetIncomingFiles:
+		out, err := d.h.GetIncomingFiles(ctx)
+		fillResult(&resp, out, err)
 	case MethodSetInnerMeshProfile:
 		var p SetInnerMeshProfileRequest
 		if err := json.Unmarshal(req.Params, &p); err != nil {

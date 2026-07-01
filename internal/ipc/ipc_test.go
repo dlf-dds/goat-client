@@ -60,6 +60,7 @@ type fakeHandler struct {
 	disableInnerCalls     int
 	innerDiagnosticsReply InnerMeshDiagnosticsReply
 	peerConnReply         GetPeerConnectivityReply
+	incomingReply         GetIncomingFilesReply
 }
 
 func (f *fakeHandler) ImportBundle(ctx context.Context, req ImportBundleRequest) (ImportBundleReply, error) {
@@ -116,6 +117,12 @@ func (f *fakeHandler) GetPeerConnectivity(ctx context.Context) (GetPeerConnectiv
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.peerConnReply, nil
+}
+
+func (f *fakeHandler) GetIncomingFiles(ctx context.Context) (GetIncomingFilesReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.incomingReply, nil
 }
 
 func TestDispatchGetPeerConnectivity(t *testing.T) {

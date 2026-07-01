@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/dlf-dds/goat-client/internal/bundle"
+	"github.com/dlf-dds/goat-client/internal/filedrop"
 	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
@@ -122,6 +123,15 @@ type Config struct {
 	// re-checks whether the subsystem should run and refreshes its target
 	// set. 0 means the default (a few seconds); tests set it low.
 	PeerConnReconcileInterval time.Duration
+
+	// FileDropInboxDir is where received files (goatdrop) land. Empty
+	// derives a sibling of BundlePath ("inbox").
+	FileDropInboxDir string
+
+	// FileServerFactory builds the filedrop receive server. nil means the
+	// real *filedrop.Server; tests inject a fake to drive the receive-side
+	// reconcile loop without binding real sockets.
+	FileServerFactory func(inbox string, auth filedrop.Authorizer, onRecv func(filedrop.Received)) fileServer
 }
 
 // Daemon is the long-lived orchestrator. Safe for concurrent use by the
@@ -146,6 +156,11 @@ type Daemon struct {
 	store           *profile.Store
 	peerConn        peerConnSource
 	peerConnFactory func(bindAddr string) peerConnController
+
+	// filedrop (goatdrop) receive side.
+	inboxDir          string
+	fileServerFactory func(inbox string, auth filedrop.Authorizer, onRecv func(filedrop.Received)) fileServer
+	received          *receivedRing
 }
 
 // peerConnSource supplies live per-peer RTT keyed by peer IP for
@@ -202,6 +217,16 @@ func New(cfg Config) (*Daemon, error) {
 			})
 		}
 	}
+	fileServerFactory := cfg.FileServerFactory
+	if fileServerFactory == nil {
+		fileServerFactory = func(inbox string, auth filedrop.Authorizer, onRecv func(filedrop.Received)) fileServer {
+			return &filedrop.Server{InboxDir: inbox, Auth: auth, OnReceive: onRecv}
+		}
+	}
+	inboxDir := cfg.FileDropInboxDir
+	if inboxDir == "" {
+		inboxDir = filepath.Join(filepath.Dir(cfg.BundlePath), "inbox")
+	}
 	// Resolve initial mode: explicit override > config file > Default.
 	resolved := cfg.InitialMode
 	if resolved == "" && cfg.ConfigPath != "" {
@@ -238,16 +263,19 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		cfg:             cfg,
-		currentMode:     resolved,
-		manager:         tunnelFactory(),
-		dnsAdapter:      dnsAdapter,
-		startedAt:       time.Now(),
-		logTail:         make([]string, cfg.LogTailSize),
-		meshFactory:     meshFactory,
-		tunnelFactory:   tunnelFactory,
-		store:           store,
-		peerConnFactory: peerConnFactory,
+		cfg:               cfg,
+		currentMode:       resolved,
+		manager:           tunnelFactory(),
+		dnsAdapter:        dnsAdapter,
+		startedAt:         time.Now(),
+		logTail:           make([]string, cfg.LogTailSize),
+		meshFactory:       meshFactory,
+		tunnelFactory:     tunnelFactory,
+		store:             store,
+		peerConnFactory:   peerConnFactory,
+		inboxDir:          inboxDir,
+		fileServerFactory: fileServerFactory,
+		received:          newReceivedRing(receivedRingCap),
 	}
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()
@@ -338,6 +366,7 @@ func (d *Daemon) ServeIPC(ctx context.Context) error {
 	server := ipc.NewServer(d, d.cfg.TrustedUid)
 	d.logf("ipc listening on %s", d.cfg.SocketPath)
 	go d.runPeerConn(ctx)
+	go d.runFileServer(ctx)
 	return server.Serve(ctx, ln)
 }
 
