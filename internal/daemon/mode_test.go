@@ -231,9 +231,10 @@ func (r *recordingMesh) Configure(c innermesh.Config) error {
 	}
 	return r.inner.Configure(c)
 }
-func (r *recordingMesh) Connect(ctx context.Context) error    { return r.inner.Connect(ctx) }
-func (r *recordingMesh) Disconnect(ctx context.Context) error { return r.inner.Disconnect(ctx) }
-func (r *recordingMesh) State() innermesh.State               { return r.inner.State() }
-func (r *recordingMesh) Stats() (innermesh.Stats, error)      { return r.inner.Stats() }
-func (r *recordingMesh) Logs(tail int) []string               { return r.inner.Logs(tail) }
-func (r *recordingMesh) Close() error                         { return r.inner.Close() }
+func (r *recordingMesh) Connect(ctx context.Context) error      { return r.inner.Connect(ctx) }
+func (r *recordingMesh) Disconnect(ctx context.Context) error   { return r.inner.Disconnect(ctx) }
+func (r *recordingMesh) State() innermesh.State                 { return r.inner.State() }
+func (r *recordingMesh) Stats() (innermesh.Stats, error)        { return r.inner.Stats() }
+func (r *recordingMesh) Peers() ([]innermesh.PeerStatus, error) { return r.inner.Peers() }
+func (r *recordingMesh) Logs(tail int) []string                 { return r.inner.Logs(tail) }
+func (r *recordingMesh) Close() error                           { return r.inner.Close() }

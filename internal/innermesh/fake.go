@@ -18,6 +18,7 @@ type Fake struct {
 	upAt    time.Time
 	closed  bool
 	peerCnt int
+	peers   []PeerStatus
 	logs    []string
 	maxLogs int
 }
@@ -27,9 +28,21 @@ type Fake struct {
 // not to grow without bound.
 const fakeLogCap = 256
 
+// fakePeers returns a small, realistic synthetic peer set: a mix of
+// direct and relayed paths so the connectivity-check panel and its tests
+// exercise both badge states. peerCnt stays in sync with its length.
+func fakePeers() []PeerStatus {
+	return []PeerStatus{
+		{IP: "100.92.0.11", PubKey: "fakepubkey-alpha", FQDN: "alpha.goat", Connected: true, Relayed: false, LocalICEType: "host", RemoteICEType: "srflx", LastHandshake: time.Now().Add(-20 * time.Second), BytesRx: 4096, BytesTx: 2048, Latency: 8 * time.Millisecond},
+		{IP: "100.92.0.12", PubKey: "fakepubkey-bravo", FQDN: "bravo.goat", Connected: true, Relayed: false, LocalICEType: "srflx", RemoteICEType: "srflx", LastHandshake: time.Now().Add(-35 * time.Second), BytesRx: 8192, BytesTx: 1024, Latency: 21 * time.Millisecond},
+		{IP: "100.92.0.13", PubKey: "fakepubkey-charlie", FQDN: "charlie.goat", Connected: true, Relayed: true, LocalICEType: "relay", RemoteICEType: "relay", RelayAddress: "relay.goat:33073", LastHandshake: time.Now().Add(-50 * time.Second), BytesRx: 512, BytesTx: 512, Latency: 0},
+	}
+}
+
 // NewFake returns a fresh Fake in StateClosed.
 func NewFake() *Fake {
-	return &Fake{state: StateClosed, peerCnt: 3, maxLogs: fakeLogCap}
+	p := fakePeers()
+	return &Fake{state: StateClosed, peerCnt: len(p), peers: p, maxLogs: fakeLogCap}
 }
 
 func (f *Fake) Configure(cfg Config) error {
@@ -99,6 +112,20 @@ func (f *Fake) Stats() (Stats, error) {
 		BytesOut:      uint64(uptime.Seconds()) * 256,
 		LastHandshake: time.Now().Add(-30 * time.Second),
 	}, nil
+}
+
+// Peers returns the synthetic peer set when up, or an empty slice when
+// not — mirroring the real Netbird.Peers contract. The returned slice is
+// a copy, safe to read without the lock.
+func (f *Fake) Peers() ([]PeerStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.state != StateUp {
+		return nil, nil
+	}
+	out := make([]PeerStatus, len(f.peers))
+	copy(out, f.peers)
+	return out, nil
 }
 
 // Logs returns up to tail trailing log lines from the in-memory ring

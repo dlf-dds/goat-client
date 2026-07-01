@@ -113,6 +113,40 @@ type Stats struct {
 	LastHandshake time.Time
 }
 
+// PeerStatus is one inner-mesh peer's status, mapped from netbird's
+// per-peer FullStatus. It is the source for the connectivity-check
+// panel's identity fields and its direct-vs-relayed badge (ADR 1063 in
+// the DesertBreadBird core repo).
+//
+// The live latency graph does NOT come from Latency here: that is
+// netbird's one-shot ICE reading, frozen at candidate-pair selection and
+// zero on the relay path. Live RTT comes from internal/peerping, keyed to
+// IP — which is both this peer's overlay address and what peerping probes.
+type PeerStatus struct {
+	IP            string        // NetBird overlay (tunnel) IP — peerping's target
+	PubKey        string        // WireGuard public key (stable identity)
+	FQDN          string        // mesh DNS name
+	Connected     bool          // ConnStatus == Connected
+	Relayed       bool          // true = via a relay (TURN or netbird relay); false = direct P2P
+	LocalICEType  string        // host / srflx / relay / prflx
+	RemoteICEType string        // as above, for the remote candidate
+	RelayAddress  string        // set on the netbird-relay path
+	LastHandshake time.Time     // last WireGuard handshake
+	BytesRx       uint64        // cumulative WG receive counter
+	BytesTx       uint64        // cumulative WG transmit counter
+	Latency       time.Duration // netbird's stale one-shot ICE RTT; prefer peerping for live
+}
+
+// Path returns the direct-vs-relayed label for the connectivity-check
+// badge: "relayed" when the selected path runs through a relay, else
+// "direct". Only meaningful when Connected.
+func (p PeerStatus) Path() string {
+	if p.Relayed {
+		return "relayed"
+	}
+	return "direct"
+}
+
 // Mesh is the daemon-visible interface. The real implementation is
 // Worker A's; until it lands the daemon binds to NewFake().
 type Mesh interface {
@@ -134,6 +168,14 @@ type Mesh interface {
 	// Stats returns the latest snapshot. May return zero values if the
 	// mesh is not StateUp.
 	Stats() (Stats, error)
+
+	// Peers returns per-peer status for every inner-mesh peer, mapped
+	// from netbird's FullStatus. Returns an empty slice (not an error)
+	// when the mesh is not up. This is the source for the
+	// connectivity-check panel's direct/relayed badge + identity fields;
+	// the live latency graph comes from internal/peerping, not from
+	// PeerStatus.Latency. Additive extension to the v0.2 interface.
+	Peers() ([]PeerStatus, error)
 
 	// Logs returns the most recent tail log lines from the inner
 	// mesh's internal log buffer. tail <= 0 returns the entire
