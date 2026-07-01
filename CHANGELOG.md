@@ -8,7 +8,36 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
-No work in flight beyond v0.3.0.
+No work in flight beyond v0.3.1.
+
+## [0.3.1] — 2026-07-01
+
+The **installers release.** Same code as v0.3.0 — this adds the OS
+installer packages the install docs describe. v0.3.0 shipped only the
+portable `.tar.gz`/`.zip` archives (both binaries, no service
+registration); the release pipeline now also builds and attaches, for
+every desktop target:
+
+- `.deb` + `.rpm` (Linux, amd64 + arm64) — systemd `goat-clientd.service`.
+- `.dmg` (macOS, amd64 + arm64) — `goat-client.app` in `/Applications`
+  plus a LaunchDaemon via the nested `.pkg`.
+- `.msi` (Windows, amd64 + arm64) — Windows Service + Start-Menu/Desktop
+  shortcuts, with `wintun.dll` vendored in.
+
+All packages are folded into `SHA256SUMS` and cosign keyless-signed
+alongside the archives. This closes the gap where the README + quickstart
+install recipes pointed at `.deb`/`.rpm`/`.dmg`/`.msi` URLs that the
+release pipeline never produced (dating to v0.2.0).
+
+### Added
+
+- **OS installer packages in the release.** `release.yml` gains
+  `package-linux` / `package-macos` / `package-windows` jobs that build
+  the packagers under `packaging/` at the tag version and attach them.
+  Engineering builds ship unsigned by the OS-native code-signing
+  (Authenticode / notarization), gated on procurement per the install
+  docs' first-launch notes. The two `VERSION=0.0.1` CI smoke debs are no
+  longer attached to releases.
 
 ## [0.3.0] — 2026-07-01
 
@@ -717,7 +746,8 @@ commit `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe` (BSD-3-Clause). Design
 lineage cited per file; aggregate attribution in
 [`NOTICE`](NOTICE) + [`LICENSE.netbird-bsd3`](LICENSE.netbird-bsd3).
 
-[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.0...HEAD
+[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.1...HEAD
+[0.3.1]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.1
 [0.3.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.0
 [0.2.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.2.0
 [0.1.2]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.1.2
