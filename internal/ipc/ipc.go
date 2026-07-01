@@ -61,6 +61,10 @@ const (
 	// with live RTT (from the peerping subsystem). Read-only.
 	MethodGetPeerConnectivity Method = "getPeerConnectivity"
 
+	// getIncomingFiles lists recent files received via goatdrop (the
+	// filedrop receive server). Read-only.
+	MethodGetIncomingFiles Method = "getIncomingFiles"
+
 	// v0.2 multi-network methods (Block 76M). The profile store
 	// holds N bundles + a single active-profile pointer; setActive
 	// is the load-bearing "switch" call that tears down the
@@ -183,6 +187,22 @@ type PeerConnectivity struct {
 // the mesh is down.
 type GetPeerConnectivityReply struct {
 	Peers []PeerConnectivity `json:"peers"`
+}
+
+// IncomingFile is one file received via goatdrop, for the GUI's received
+// list + a notification.
+type IncomingFile struct {
+	Name   string    `json:"name"`
+	Size   int64     `json:"size"`
+	From   string    `json:"from,omitempty"`
+	FromIP string    `json:"fromIp,omitempty"`
+	Path   string    `json:"path,omitempty"`
+	At     time.Time `json:"at,omitempty"`
+}
+
+// GetIncomingFilesReply lists recent inbound transfers, newest first.
+type GetIncomingFilesReply struct {
+	Files []IncomingFile `json:"files"`
 }
 
 // GetModeReply / SetModeRequest / SetModeReply carry the v0.2 mode
@@ -370,6 +390,9 @@ type Handler interface {
 
 	// GetPeerConnectivity backs the connectivity-check panel. Read-only.
 	GetPeerConnectivity(ctx context.Context) (GetPeerConnectivityReply, error)
+
+	// GetIncomingFiles lists recent goatdrop transfers. Read-only.
+	GetIncomingFiles(ctx context.Context) (GetIncomingFilesReply, error)
 
 	// v0.2 multi-network methods (Block 76M).
 	ListProfiles(ctx context.Context) (ListProfilesReply, error)
