@@ -412,15 +412,17 @@ jobs:
 
   checksums:
     name: aggregate SHA256SUMS
-    needs: build-gui-matrix
+    needs: [build-gui-matrix, package-linux, package-macos, package-windows]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Download GUI-matrix artifacts
+      - name: Download GUI-matrix + package artifacts
         uses: actions/download-artifact@v4
         with:
-          # Match the gui-matrix archive names; daemon-only artifacts
-          # are filtered out by this pattern.
+          # Matches the gui-matrix archives (goat-client-<os>-<arch>) AND
+          # the package artifacts (goat-client-pkg-<os>-<arch>), each of
+          # which carries its own *.sha256 sidecars. Daemon-only artifacts
+          # (goat-clientd-only-*) are filtered out by this pattern.
           pattern: goat-client-*
           path: artifacts
       - name: Build SHA256SUMS manifest
@@ -638,11 +640,232 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # ── Installable packages ──────────────────────────────────────────────
+  # The archives above are just the two binaries; these jobs build the OS
+  # packages the README/quickstart install recipes advertise (.deb/.rpm/
+  # .dmg/.msi), from the packagers under packaging/ (nfpm / pkgbuild+hdiutil
+  # / WiX). They consume the same gui-matrix binaries (extracted from each
+  # platform archive), stamp the tag VERSION, and feed the checksums +
+  # cosign + release path so a tag ships installable packages. Non-PR only,
+  # matching the other package/smoke jobs (keeps PR feedback fast); on a
+  # branch push / workflow_dispatch they build + upload artifacts without
+  # touching a Release, which is how the packaging is validated pre-tag.
+  #
+  # VERSION: on refs/tags/goat-client-v* it is the tag minus the prefix
+  # (0.3.1); off-tag it is a static 0.0.0 so nfpm/rpm/dmg/msi all accept it
+  # (rpm rejects a version containing '-', so no `-dev` suffix here).
+
+  package-linux:
+    name: package linux/${{ matrix.arch }} (.deb + .rpm)
+    needs: build-gui-matrix
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download linux/${{ matrix.arch }} archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goat-client-linux-${{ matrix.arch }}
+          path: stage
+      - name: Stage binaries into dist/linux_${{ matrix.arch }}/
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/linux_${{ matrix.arch }}"
+          tar -xzf "stage/goat-client-linux-${{ matrix.arch }}.tar.gz" \
+            -C "dist/linux_${{ matrix.arch }}"
+          test -x "dist/linux_${{ matrix.arch }}/goat-client"
+          test -x "dist/linux_${{ matrix.arch }}/goat-clientd"
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.46.0/nfpm_2.46.0_amd64.deb -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/goat-client-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#goat-client-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build .deb + .rpm
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          packaging/build-linux-pkg.sh deb
+          packaging/build-linux-pkg.sh rpm
+          ls -la dist/*.deb dist/*.rpm
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.deb *.rpm; do [ -f "$f" ] && sha256sum "$f" > "$f.sha256"; done
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goat-client-pkg-linux-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.deb.sha256
+            dist/*.rpm.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  package-macos:
+    name: package darwin/${{ matrix.arch }} (.dmg)
+    needs: build-gui-matrix
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download darwin/${{ matrix.arch }} archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goat-client-darwin-${{ matrix.arch }}
+          path: stage
+      - name: Stage binaries into dist/darwin_${{ matrix.arch }}/
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/darwin_${{ matrix.arch }}"
+          tar -xzf "stage/goat-client-darwin-${{ matrix.arch }}.tar.gz" \
+            -C "dist/darwin_${{ matrix.arch }}"
+          test -x "dist/darwin_${{ matrix.arch }}/goat-client"
+          test -x "dist/darwin_${{ matrix.arch }}/goat-clientd"
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/goat-client-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#goat-client-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build .dmg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ./packaging/dmg/build-dmg.sh
+          ls -la dist/*.dmg
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goat-client-pkg-darwin-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  package-windows:
+    name: package windows/${{ matrix.target.arch }} (.msi)
+    needs: build-gui-matrix
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { arch: amd64, runner: windows-latest, wintun: amd64 }
+          - { arch: arm64, runner: windows-11-arm, wintun: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download windows/${{ matrix.target.arch }} archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goat-client-windows-${{ matrix.target.arch }}
+          path: stage
+      - name: Stage binaries into dist/windows_${{ matrix.target.arch }}/
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/windows_${{ matrix.target.arch }}"
+          7z x "stage/goat-client-windows-${{ matrix.target.arch }}.zip" \
+            -o"dist/windows_${{ matrix.target.arch }}" -y >/dev/null
+          ls -la "dist/windows_${{ matrix.target.arch }}"
+          test -f "dist/windows_${{ matrix.target.arch }}/goat-client.exe"
+          test -f "dist/windows_${{ matrix.target.arch }}/goat-clientd.exe"
+      - name: Vendor wintun.dll
+        shell: bash
+        # wintun.dll is the WireGuard userspace driver the WiX manifest
+        # installs (.wxs File Source=dist\windows_<arch>\wintun.dll). Pinned
+        # to the last upstream release from wintun.net; integrity-checked.
+        run: |
+          set -euo pipefail
+          curl -fsSLo wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+          actual=$(sha256sum wintun.zip | awk '{print $1}')
+          expected=07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+          echo "wintun.zip sha256: $actual (expected $expected)"
+          if [ "$actual" != "$expected" ]; then
+            echo "wintun.zip checksum mismatch" >&2
+            exit 1
+          fi
+          7z x wintun.zip -owintun-extract -y >/dev/null
+          cp "wintun-extract/wintun/bin/${{ matrix.target.wintun }}/wintun.dll" \
+             "dist/windows_${{ matrix.target.arch }}/wintun.dll"
+          test -f "dist/windows_${{ matrix.target.arch }}/wintun.dll"
+      - name: Install WiX v4 toolset
+        shell: pwsh
+        # WiX v4 CLI as a .NET global tool. The .wxs is authored for v4 and
+        # uses the Util extension (permission/registry helpers). Pin so the
+        # manifest and toolset majors match.
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          wix extension add -g WixToolset.Util.wixext/4.0.5
+      - name: Resolve VERSION
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/goat-client-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#goat-client-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build .msi
+        shell: pwsh
+        run: |
+          .\packaging\msi\build-msi.ps1 -Version ${{ steps.ver.outputs.version }} -Arch ${{ matrix.target.arch }}
+          Get-ChildItem dist\*.msi
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.msi; do sha256sum "$f" > "$f.sha256"; done
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goat-client-pkg-windows-${{ matrix.target.arch }}
+          path: |
+            dist/*.msi
+            dist/*.msi.sha256
+          if-no-files-found: error
+          retention-days: 90
+
   cosign:
     name: cosign sign archives
     # Tag-only: signing on every push wastes Sigstore log entries and
     # leaks confusing PR-time bundles. We sign exactly what we ship.
-    needs: [build-gui-matrix, checksums]
+    needs: [build-gui-matrix, checksums, package-linux, package-macos, package-windows]
     if: startsWith(github.ref, 'refs/tags/goat-client-v')
     runs-on: ubuntu-latest
     permissions:
@@ -669,9 +892,14 @@ jobs:
           for d in artifacts/goat-client-*; do
             [ -d "$d" ] || continue
             base=$(basename "$d")
-            # checksums + deb are not part of the cosign-signed asset set.
+            # Excluded from the shipped asset set: the SHA256SUMS artifact
+            # (copied explicitly below) and the two VERSION=0.0.1 CI smoke
+            # debs (goat-client-deb-amd64 / goat-client-headless-deb-amd64)
+            # — those are packaging-contract smoke tests, not release assets.
+            # The real installers arrive as goat-client-pkg-<os>-<arch>.
             [ "$base" = "goat-client-checksums" ] && continue
             [ "$base" = "goat-client-deb-amd64" ] && continue
+            [ "$base" = "goat-client-headless-deb-amd64" ] && continue
             cp "$d"/* release-assets/
           done
           cp artifacts/goat-client-checksums/SHA256SUMS release-assets/SHA256SUMS
@@ -680,13 +908,15 @@ jobs:
         uses: sigstore/cosign-installer@v3
         with:
           cosign-release: 'v2.4.1'
-      - name: Sign archives + SHA256SUMS (keyless, sigstore OIDC)
+      - name: Sign archives + packages + SHA256SUMS (keyless, sigstore OIDC)
         env:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
           cd release-assets
-          for f in goat-client-*.tar.gz goat-client-*.zip SHA256SUMS; do
+          for f in goat-client-*.tar.gz goat-client-*.zip \
+                   goat-client-*.deb goat-client-*.rpm \
+                   goat-client-*.dmg goat-client-*.msi SHA256SUMS; do
             [ -f "$f" ] || continue
             echo "signing ${f}"
             cosign sign-blob --yes \
@@ -748,10 +978,20 @@ jobs:
           body: |
             ## goat-client ${{ github.ref_name }}
 
-            Six desktop targets, each shipped as a `.tar.gz` (Linux / macOS) or
-            `.zip` (Windows) carrying both the `goat-clientd` system daemon
-            and the `goat-client` Fyne desktop GUI. Built natively on each
-            platform's GitHub-hosted runner with `CGO_ENABLED=1`.
+            Six desktop targets, each shipped two ways:
+
+            - **Portable archives** — `.tar.gz` (Linux / macOS) or `.zip`
+              (Windows) carrying both the `goat-clientd` system daemon and the
+              `goat-client` Fyne desktop GUI, side by side.
+            - **OS installers** — `.deb` / `.rpm` (Linux, both arches),
+              `.dmg` (macOS, both arches), and `.msi` (Windows, both arches).
+              These register the daemon as a system service (auto-start) and
+              install the GUI + launcher, per the README install recipes.
+
+            Built natively on each platform's GitHub-hosted runner with
+            `CGO_ENABLED=1`. Engineering builds ship unsigned by the OS's
+            native code-signing (Gatekeeper / Authenticode) — see the README
+            for the per-platform first-launch steps.
 
             ### Verifying
 
