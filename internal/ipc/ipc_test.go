@@ -59,6 +59,7 @@ type fakeHandler struct {
 	enableInnerCalls      int
 	disableInnerCalls     int
 	innerDiagnosticsReply InnerMeshDiagnosticsReply
+	peerConnReply         GetPeerConnectivityReply
 }
 
 func (f *fakeHandler) ImportBundle(ctx context.Context, req ImportBundleRequest) (ImportBundleReply, error) {
@@ -109,6 +110,41 @@ func (f *fakeHandler) GetInnerMeshStatus(ctx context.Context) (InnerMeshSnapshot
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.innerStatusReply, nil
+}
+
+func (f *fakeHandler) GetPeerConnectivity(ctx context.Context) (GetPeerConnectivityReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peerConnReply, nil
+}
+
+func TestDispatchGetPeerConnectivity(t *testing.T) {
+	h := &fakeHandler{peerConnReply: GetPeerConnectivityReply{Peers: []PeerConnectivity{
+		{IP: "100.92.0.11", Path: "direct", Connected: true, Measured: true, Samples: 5, RTTAvgMs: 8.5},
+		{IP: "100.92.0.13", Path: "relayed", Connected: true, Measured: false},
+	}}}
+	socket, srv := startServer(t, h)
+	defer srv.Close()
+	conn, err := Dial(socket)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	cli := newRPCClient(conn)
+	defer cli.Close()
+
+	var reply GetPeerConnectivityReply
+	if err := cli.call(MethodGetPeerConnectivity, EmptyRequest{}, &reply, 5*time.Second); err != nil {
+		t.Fatalf("getPeerConnectivity: %v", err)
+	}
+	if len(reply.Peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(reply.Peers))
+	}
+	if reply.Peers[0].Path != "direct" || !reply.Peers[0].Measured || reply.Peers[0].RTTAvgMs != 8.5 {
+		t.Errorf("peer[0] round-trip mismatch: %+v", reply.Peers[0])
+	}
+	if reply.Peers[1].Path != "relayed" || reply.Peers[1].Measured {
+		t.Errorf("peer[1] round-trip mismatch: %+v", reply.Peers[1])
+	}
 }
 
 func (f *fakeHandler) SetInnerMeshProfile(ctx context.Context, req SetInnerMeshProfileRequest) error {
