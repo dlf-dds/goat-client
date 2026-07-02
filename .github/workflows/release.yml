@@ -914,8 +914,11 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
+          # .deb uses Debian's underscore naming (goat-client_<ver>_<arch>.deb),
+          # every other asset uses a hyphen — so match goat-client*.deb to
+          # catch both, else the debs ship without a per-file cosign bundle.
           for f in goat-client-*.tar.gz goat-client-*.zip \
-                   goat-client-*.deb goat-client-*.rpm \
+                   goat-client*.deb goat-client-*.rpm \
                    goat-client-*.dmg goat-client-*.msi SHA256SUMS; do
             [ -f "$f" ] || continue
             echo "signing ${f}"
