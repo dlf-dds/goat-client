@@ -186,6 +186,11 @@ func (n *Netbird) Stats() (Stats, error) {
 		if p.LastWireguardHandshake.After(out.LastHandshake) {
 			out.LastHandshake = p.LastWireguardHandshake
 		}
+		// Post-quantum: netbird sets RosenpassEnabled on a peer's state when
+		// the Rosenpass hybrid key exchange is active on that link.
+		if p.RosenpassEnabled {
+			out.RosenpassPeers++
+		}
 	}
 	return out, nil
 }

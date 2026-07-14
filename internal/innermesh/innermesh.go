@@ -111,6 +111,10 @@ type Stats struct {
 	BytesIn       uint64
 	BytesOut      uint64
 	LastHandshake time.Time
+	// RosenpassPeers is how many of PeerCount connections have Rosenpass
+	// (post-quantum) key exchange active — the "Quantum resistance: true"
+	// signal from netbird's per-peer state. 0 = no PQC on any link.
+	RosenpassPeers int
 }
 
 // PeerStatus is one inner-mesh peer's status, mapped from netbird's

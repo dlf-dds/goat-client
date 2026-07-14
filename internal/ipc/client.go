@@ -167,11 +167,12 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 	}
 	if reply.InnerMesh != nil {
 		out.InnerMesh = &InnerMeshInfo{
-			State:         mapWireState(reply.InnerMesh.State),
-			PeerCount:     reply.InnerMesh.PeerCount,
-			BytesIn:       reply.InnerMesh.BytesIn,
-			BytesOut:      reply.InnerMesh.BytesOut,
-			LastHandshake: reply.InnerMesh.LastHandshake,
+			State:          mapWireState(reply.InnerMesh.State),
+			PeerCount:      reply.InnerMesh.PeerCount,
+			BytesIn:        reply.InnerMesh.BytesIn,
+			BytesOut:       reply.InnerMesh.BytesOut,
+			LastHandshake:  reply.InnerMesh.LastHandshake,
+			RosenpassPeers: reply.InnerMesh.RosenpassPeers,
 		}
 	}
 	return out, nil

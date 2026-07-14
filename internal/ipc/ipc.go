@@ -153,6 +153,9 @@ type InnerMeshSnapshot struct {
 	BytesIn       uint64      `json:"bytesIn"`
 	BytesOut      uint64      `json:"bytesOut"`
 	LastHandshake time.Time   `json:"lastHandshake,omitempty"`
+	// RosenpassPeers is how many of PeerCount links have Rosenpass
+	// (post-quantum) key exchange active. 0 = no PQC on any peer link.
+	RosenpassPeers int `json:"rosenpassPeers"`
 }
 
 // PeerConnectivity is one inner-mesh peer's line for the connectivity-check
