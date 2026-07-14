@@ -130,11 +130,13 @@ func (p *statusPane) apply(st *ipc.StatusInfo) {
 			p.mesh.SetPeerCount(0)
 			p.mesh.SetLastHandshake("never")
 			p.mesh.SetBytes(0, 0)
+			p.mesh.SetPqc(0, 0)
 		} else {
 			p.mesh.SetState(stateLabel(st.InnerMesh.State))
 			p.mesh.SetPeerCount(st.InnerMesh.PeerCount)
 			p.mesh.SetLastHandshake(formatHandshake(st.InnerMesh.LastHandshake))
 			p.mesh.SetBytes(st.InnerMesh.BytesIn, st.InnerMesh.BytesOut)
+			p.mesh.SetPqc(st.InnerMesh.RosenpassPeers, st.InnerMesh.PeerCount)
 		}
 	}
 
@@ -175,6 +177,7 @@ type tunnelCard struct {
 	peer          *widget.Label
 	endpoints     *widget.Label
 	peerCount     *widget.Label
+	pqc           *widget.Label
 
 	root       fyne.CanvasObject
 	selectable bool
@@ -193,6 +196,7 @@ func newTunnelCard(title string, onSelect func()) *tunnelCard {
 		peer:          widget.NewLabel("—"),
 		endpoints:     widget.NewLabel("—"),
 		peerCount:     widget.NewLabel("—"),
+		pqc:           widget.NewLabel("—"),
 		onSelect:      onSelect,
 	}
 	c.peer.Wrapping = fyne.TextWrapBreak
@@ -207,6 +211,7 @@ func newTunnelCard(title string, onSelect func()) *tunnelCard {
 		widget.NewLabel("Peer pubkey:"), c.peer,
 		widget.NewLabel("Endpoints:"), c.endpoints,
 		widget.NewLabel("Peer count:"), c.peerCount,
+		widget.NewLabel("Post-quantum:"), c.pqc,
 	)
 
 	selectBtn := widget.NewButton("Select for diagnostics", func() {
@@ -231,6 +236,17 @@ func (c *tunnelCard) SetBytes(in, out uint64) {
 func (c *tunnelCard) SetPeer(s string)      { c.peer.SetText(s) }
 func (c *tunnelCard) SetEndpoints(s string) { c.endpoints.SetText(s) }
 func (c *tunnelCard) SetPeerCount(n int)    { c.peerCount.SetText(fmt.Sprintf("%d", n)) }
+
+// SetPqc renders the post-quantum (Rosenpass) status of the mesh links:
+// "active (N/M peers)" when at least one link has PQ key exchange, else
+// "inactive".
+func (c *tunnelCard) SetPqc(rosenpassPeers, peerCount int) {
+	if rosenpassPeers > 0 {
+		c.pqc.SetText(fmt.Sprintf("active (%d/%d peers)", rosenpassPeers, peerCount))
+	} else {
+		c.pqc.SetText("inactive")
+	}
+}
 
 // SetSelectable hides the "Select for diagnostics" button when the card
 // is the only leg in the current mode.

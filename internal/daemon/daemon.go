@@ -634,6 +634,7 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 			snap.BytesIn = st.BytesIn
 			snap.BytesOut = st.BytesOut
 			snap.LastHandshake = st.LastHandshake
+			snap.RosenpassPeers = st.RosenpassPeers
 		}
 		reply.InnerMesh = snap
 	}
@@ -776,6 +777,7 @@ func (d *Daemon) GetInnerMeshStatus(_ context.Context) (ipc.InnerMeshSnapshot, e
 		snap.BytesIn = st.BytesIn
 		snap.BytesOut = st.BytesOut
 		snap.LastHandshake = st.LastHandshake
+		snap.RosenpassPeers = st.RosenpassPeers
 	}
 	return snap, nil
 }

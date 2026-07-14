@@ -290,6 +290,12 @@ func runStatus(args []string, defaultDaemonAddr string) int {
 	if st.InnerMesh != nil {
 		fmt.Fprintf(os.Stdout, "inner-mesh:     state=%s peers=%d in=%d out=%d\n",
 			st.InnerMesh.State, st.InnerMesh.PeerCount, st.InnerMesh.BytesIn, st.InnerMesh.BytesOut)
+		pqc := "inactive"
+		if st.InnerMesh.RosenpassPeers > 0 {
+			pqc = "active"
+		}
+		fmt.Fprintf(os.Stdout, "pqc (rosenpass): %s (%d/%d peers)\n",
+			pqc, st.InnerMesh.RosenpassPeers, st.InnerMesh.PeerCount)
 	}
 	if st.ErrorMessage != "" {
 		fmt.Fprintf(os.Stdout, "error:          %s\n", st.ErrorMessage)

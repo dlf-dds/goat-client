@@ -48,6 +48,9 @@ type InnerMeshInfo struct {
 	BytesIn       uint64    `json:"bytes_in"`
 	BytesOut      uint64    `json:"bytes_out"`
 	LastHandshake time.Time `json:"last_handshake,omitempty"`
+	// RosenpassPeers is how many links have Rosenpass (post-quantum) key
+	// exchange active. 0 = no PQC on any peer link.
+	RosenpassPeers int `json:"rosenpass_peers"`
 }
 
 // BundleInfo summarises an imported bundle for display in the GUI.
