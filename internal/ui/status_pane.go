@@ -34,6 +34,12 @@ type statusPane struct {
 
 	errorMessage *widget.Label
 
+	// namesBanner renders the name-fallback subsystem state (ADR 1081).
+	// Empty while names resolve live; a visible flagged line whenever
+	// fallback answers are being served — noncanonical (observed)
+	// records are never blended silently into a healthy-looking pane.
+	namesBanner *widget.Label
+
 	// selected is the diagnostics-focus card identifier ("wg-cp0" or
 	// "netbird"); only meaningful in combined mode. Defaults to "wg-cp0".
 	selected string
@@ -43,10 +49,13 @@ func newStatusPane(client ipc.Client) *statusPane {
 	p := &statusPane{
 		client:       client,
 		errorMessage: widget.NewLabel(""),
+		namesBanner:  widget.NewLabel(""),
 		header:       widget.NewLabel(""),
 		selected:     "wg-cp0",
 	}
 	p.errorMessage.Wrapping = fyne.TextWrapWord
+	p.namesBanner.Wrapping = fyne.TextWrapWord
+	p.namesBanner.TextStyle = fyne.TextStyle{Bold: true}
 	p.header.TextStyle = fyne.TextStyle{Italic: true}
 
 	p.wg = newTunnelCard("wg-cp0 (outer)", func() { p.selected = "wg-cp0"; p.applySelectionBadge() })
@@ -55,7 +64,7 @@ func newStatusPane(client ipc.Client) *statusPane {
 	p.stack = container.NewVBox()
 
 	refresh := widget.NewButton("Refresh", func() { p.Refresh() })
-	footer := container.NewVBox(p.errorMessage, refresh)
+	footer := container.NewVBox(p.namesBanner, p.errorMessage, refresh)
 	p.root = container.NewBorder(p.header, footer, nil, nil, p.stack)
 	p.Refresh()
 	return p
@@ -140,9 +149,28 @@ func (p *statusPane) apply(st *ipc.StatusInfo) {
 		}
 	}
 
+	p.namesBanner.SetText(namesBannerText(st.Names))
+
 	if st.ErrorMessage != "" {
 		p.errorMessage.SetText(st.ErrorMessage)
 	}
+}
+
+// namesBannerText renders the name-fallback state. Silent (empty) only
+// when no fallback is in use — degradation is always visible, and
+// noncanonical usage is called out explicitly.
+func namesBannerText(n *ipc.NamesSnapshot) string {
+	if n == nil || n.FallbackServed == 0 {
+		return ""
+	}
+	label := fmt.Sprintf("⚠ names fallback in use — %d answers served", n.FallbackServed)
+	if n.Grade != "unavailable" {
+		label += fmt.Sprintf(" (signed snapshot serial %d, %s, age %s)", n.Serial, n.Grade, n.Age)
+	}
+	if n.Observed > 0 {
+		label += fmt.Sprintf(" · %d NONCANONICAL (ad hoc) observed records in play", n.Observed)
+	}
+	return label
 }
 
 func (p *statusPane) applySelectionBadge() {

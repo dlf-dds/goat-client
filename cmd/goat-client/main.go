@@ -297,6 +297,22 @@ func runStatus(args []string, defaultDaemonAddr string) int {
 		fmt.Fprintf(os.Stdout, "pqc (rosenpass): %s (%d/%d peers)\n",
 			pqc, st.InnerMesh.RosenpassPeers, st.InnerMesh.PeerCount)
 	}
+	if st.Names != nil {
+		n := st.Names
+		if n.Grade == "unavailable" {
+			fmt.Fprintf(os.Stdout, "names:          no signed snapshot cached (%d observed)\n", n.Observed)
+		} else {
+			fmt.Fprintf(os.Stdout, "names:          snapshot serial %d (%s, age %s), %d records, %d observed\n",
+				n.Serial, n.Grade, n.Age, n.Records, n.Observed)
+		}
+		if n.ForwarderAddr != "" {
+			fmt.Fprintf(os.Stdout, "names-fwd:      %s (%d fallback answers served)\n", n.ForwarderAddr, n.FallbackServed)
+		}
+		if n.FallbackServed > 0 {
+			fmt.Fprintf(os.Stdout, "names-warn:     FALLBACK IN USE — last %s; noncanonical (observed) answers are flagged in daemon logs\n",
+				n.LastFallback.UTC().Format(time.RFC3339))
+		}
+	}
 	if st.ErrorMessage != "" {
 		fmt.Fprintf(os.Stdout, "error:          %s\n", st.ErrorMessage)
 	}

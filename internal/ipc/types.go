@@ -39,6 +39,10 @@ type StatusInfo struct {
 	Bundle         *BundleInfo    `json:"bundle,omitempty"`
 	ErrorMessage   string         `json:"error_message,omitempty"`
 	InnerMesh      *InnerMeshInfo `json:"inner_mesh,omitempty"`
+	// Names is the name-fallback subsystem state (ADR 1081). Renderers
+	// MUST visibly flag nonzero Observed usage and any non-live serving —
+	// noncanonical answers are never blended with canonical ones.
+	Names *NamesSnapshot `json:"names,omitempty"`
 }
 
 // InnerMeshInfo mirrors InnerMeshSnapshot for the GUI side.
