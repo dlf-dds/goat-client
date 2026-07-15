@@ -110,8 +110,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dexidp/dex/api/v2 v2.4.0 h1:gNba7n6BKVp8X4Jp24cxYn5rIIGhM6kDOXcZoL6tr9A=
 github.com/dexidp/dex/api/v2 v2.4.0/go.mod h1:/p550ADvFFh7K95VmhUD+jgm15VdaNnab9td8DHOpyI=
-github.com/dfarrel1/netbird v0.0.0-20260509180947-32d04da1937e h1:p264fp2/yXMg8L2lIvLcJ4Cs9OU9yXNUyG/ghpG4lAs=
-github.com/dfarrel1/netbird v0.0.0-20260509180947-32d04da1937e/go.mod h1:G25nZeGsWvzIO2HvEYqb0UAzc8mtozXVD4cMe0tgcfU=
+github.com/dfarrel1/netbird v0.0.0-20260715211302-8e30fabfec40 h1:PZhpaL+VdgsIiVJlKphqKO6OEvZiga2+rblS153jXFM=
+github.com/dfarrel1/netbird v0.0.0-20260715211302-8e30fabfec40/go.mod h1:G25nZeGsWvzIO2HvEYqb0UAzc8mtozXVD4cMe0tgcfU=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f/go.mod h1:cuUVRXasLTGF7a8hSLbxyZXjz+1KgoB3wDUb6vlszIc=
 github.com/distribution/reference v0.6.0 h1:0IXCQ5g4/QMHHkarYzh5l+u8T3t73zM5QvfrDyIgxBk=
