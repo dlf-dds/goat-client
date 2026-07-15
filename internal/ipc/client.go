@@ -175,6 +175,10 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 			RosenpassPeers: reply.InnerMesh.RosenpassPeers,
 		}
 	}
+	if reply.Names != nil {
+		names := *reply.Names
+		out.Names = &names
+	}
 	return out, nil
 }
 

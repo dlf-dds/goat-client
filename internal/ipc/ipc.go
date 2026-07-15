@@ -142,6 +142,23 @@ type StatusReply struct {
 	ConfiguredEndpoints []string           `json:"configuredEndpoints,omitempty"`
 	ErrorMessage        string             `json:"errorMessage,omitempty"`
 	InnerMesh           *InnerMeshSnapshot `json:"innerMesh,omitempty"`
+	Names               *NamesSnapshot     `json:"names,omitempty"`
+}
+
+// NamesSnapshot is the name-fallback subsystem's status surface
+// (DesertBreadBird ADR 1082): the signed-snapshot honesty contract
+// (serial + age + grade), the NONCANONICAL observed-tier count, and the
+// local forwarder's fallback-served counters. Grade "unavailable" means
+// no validly-signed snapshot is cached.
+type NamesSnapshot struct {
+	Grade          string    `json:"grade"`
+	Serial         uint64    `json:"serial,omitempty"`
+	Age            string    `json:"age,omitempty"`
+	Records        int       `json:"records"`
+	Observed       int       `json:"observed"`
+	ForwarderAddr  string    `json:"forwarderAddr,omitempty"`
+	FallbackServed int64     `json:"fallbackServed"`
+	LastFallback   time.Time `json:"lastFallback,omitempty"`
 }
 
 // InnerMeshSnapshot is the inner-mesh subsystem's status surface. Mirrors

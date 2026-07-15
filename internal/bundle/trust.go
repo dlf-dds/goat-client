@@ -58,6 +58,15 @@ func NewTrustRoots(keys ...*ecdsa.PublicKey) (*TrustRoots, error) {
 	return tr, nil
 }
 
+// Keys returns a copy of the root set — consumers (the names store)
+// verify other artifact classes against the same roots.
+func (tr *TrustRoots) Keys() []*ecdsa.PublicKey {
+	if tr == nil {
+		return nil
+	}
+	return append([]*ecdsa.PublicKey(nil), tr.keys...)
+}
+
 // Add appends a P-256 public key to an existing TrustRoots set.
 // Returns the same curve / nil validation errors as NewTrustRoots.
 //

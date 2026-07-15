@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +35,7 @@ import (
 	"github.com/dlf-dds/goat-client/internal/innermesh"
 	"github.com/dlf-dds/goat-client/internal/ipc"
 	"github.com/dlf-dds/goat-client/internal/mode"
+	goatnames "github.com/dlf-dds/goat-client/internal/names"
 	"github.com/dlf-dds/goat-client/internal/peerping"
 	"github.com/dlf-dds/goat-client/internal/profile"
 	"github.com/dlf-dds/goat-client/internal/tunnel"
@@ -139,8 +142,12 @@ type Config struct {
 type Daemon struct {
 	cfg Config
 
-	mu              sync.RWMutex
-	currentMode     mode.Mode
+	mu          sync.RWMutex
+	currentMode mode.Mode
+	// namesSvc is the device-wide name-fallback subsystem (ADR 1082):
+	// local DNS forwarder + shared signed-snapshot store + observed
+	// tier. Nil when construction failed (never fatal to the daemon).
+	namesSvc        *goatnames.Service
 	currentBundle   *bundle.EnrollmentBundle
 	currentSlug     string // active profile slug; "" when no profile loaded
 	manager         TunnelManager
@@ -280,7 +287,39 @@ func New(cfg Config) (*Daemon, error) {
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()
 	}
+	// Names subsystem (ADR 1082): the store lives beside the bundle;
+	// trust roots are the same set that verifies enrollment bundles.
+	// Construction failure disables the subsystem, never the daemon.
+	if svc, nerr := goatnames.NewService(
+		filepath.Join(filepath.Dir(cfg.BundlePath), "names"),
+		cfg.TrustRoots.Keys(),
+	); nerr != nil {
+		d.logf("names subsystem disabled: %v", nerr)
+	} else {
+		svc.SetSiteFunc(d.currentSiteZone)
+		d.namesSvc = svc
+	}
 	return d, nil
+}
+
+// currentSiteZone derives (site, zone) for the names refresh origin
+// (get.<site>.<zone>) from the active bundle: site = bundle.Site, zone =
+// the management hostname (the mesh DNS zone by goat convention). Empty
+// when no bundle is loaded — the refresh loop skips until one is.
+func (d *Daemon) currentSiteZone() (string, string) {
+	d.mu.RLock()
+	b := d.currentBundle
+	d.mu.RUnlock()
+	if b == nil {
+		return "", ""
+	}
+	zone := ""
+	if raw := b.InnerMeshSetup.ManagementURL; raw != "" {
+		if u, err := url.Parse(raw); err == nil {
+			zone = u.Hostname()
+		}
+	}
+	return b.Site, zone
 }
 
 // LoadPersistedBundle reconciles the on-disk state with the daemon
@@ -367,6 +406,15 @@ func (d *Daemon) ServeIPC(ctx context.Context) error {
 	d.logf("ipc listening on %s", d.cfg.SocketPath)
 	go d.runPeerConn(ctx)
 	go d.runFileServer(ctx)
+	if d.namesSvc != nil {
+		listen := os.Getenv("GOAT_NAMES_LISTEN")
+		if listen == "" {
+			listen = "127.0.0.1:53530"
+		}
+		if err := d.namesSvc.Run(ctx, listen); err != nil {
+			d.logf("names forwarder failed to start (non-fatal): %v", err)
+		}
+	}
 	return server.Serve(ctx, ln)
 }
 
@@ -637,6 +685,19 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 			snap.RosenpassPeers = st.RosenpassPeers
 		}
 		reply.InnerMesh = snap
+	}
+	if d.namesSvc != nil {
+		ns := d.namesSvc.StatusSnapshot(time.Now())
+		reply.Names = &ipc.NamesSnapshot{
+			Grade:          ns.Grade,
+			Serial:         ns.Serial,
+			Age:            ns.Age,
+			Records:        ns.Records,
+			Observed:       ns.Observed,
+			ForwarderAddr:  ns.ForwarderAddr,
+			FallbackServed: ns.FallbackServed,
+			LastFallback:   ns.LastFallback,
+		}
 	}
 	if lastErr != nil {
 		reply.ErrorMessage = lastErr.Error()
@@ -964,6 +1025,13 @@ func (d *Daemon) Connect(ctx context.Context) error {
 			Nameservers:   cfg.DNSServers,
 			SearchDomains: cfg.SearchDomains,
 			MatchDomains:  cfg.MatchDomains,
+		}
+		if d.namesSvc != nil {
+			ups := make([]string, 0, len(cfg.DNSServers))
+			for _, a := range cfg.DNSServers {
+				ups = append(ups, a.String())
+			}
+			d.namesSvc.SetUpstreams(ups)
 		}
 		if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
 			d.logf("dns adapter apply failed (non-fatal): %v", err)
