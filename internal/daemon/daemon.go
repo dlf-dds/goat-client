@@ -144,7 +144,7 @@ type Daemon struct {
 
 	mu          sync.RWMutex
 	currentMode mode.Mode
-	// namesSvc is the device-wide name-fallback subsystem (ADR 1081):
+	// namesSvc is the device-wide name-fallback subsystem (ADR 1082):
 	// local DNS forwarder + shared signed-snapshot store + observed
 	// tier. Nil when construction failed (never fatal to the daemon).
 	namesSvc        *goatnames.Service
@@ -287,7 +287,7 @@ func New(cfg Config) (*Daemon, error) {
 	if resolved.IncludesNetbird() {
 		d.mesh = meshFactory()
 	}
-	// Names subsystem (ADR 1081): the store lives beside the bundle;
+	// Names subsystem (ADR 1082): the store lives beside the bundle;
 	// trust roots are the same set that verifies enrollment bundles.
 	// Construction failure disables the subsystem, never the daemon.
 	if svc, nerr := goatnames.NewService(

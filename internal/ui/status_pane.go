@@ -34,7 +34,7 @@ type statusPane struct {
 
 	errorMessage *widget.Label
 
-	// namesBanner renders the name-fallback subsystem state (ADR 1081).
+	// namesBanner renders the name-fallback subsystem state (ADR 1082).
 	// Empty while names resolve live; a visible flagged line whenever
 	// fallback answers are being served — noncanonical (observed)
 	// records are never blended silently into a healthy-looking pane.

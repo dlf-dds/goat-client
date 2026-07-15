@@ -146,7 +146,7 @@ type StatusReply struct {
 }
 
 // NamesSnapshot is the name-fallback subsystem's status surface
-// (DesertBreadBird ADR 1081): the signed-snapshot honesty contract
+// (DesertBreadBird ADR 1082): the signed-snapshot honesty contract
 // (serial + age + grade), the NONCANONICAL observed-tier count, and the
 // local forwarder's fallback-served counters. Grade "unavailable" means
 // no validly-signed snapshot is cached.

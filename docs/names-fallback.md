@@ -1,4 +1,4 @@
-# Device-wide name fallback (ADR 1081)
+# Device-wide name fallback (ADR 1082)
 
 When a goatnet's mesh DNS is down or unreachable, every mesh service dies
 *by name* while the WireGuard paths still work. goat-clientd closes that
@@ -6,7 +6,7 @@ gap device-wide: it runs a local UDP DNS forwarder backed by a
 signed-snapshot store, so names keep answering — honestly labeled — while
 the name plane is out.
 
-Design of record: `docs/design/name-fallback-resolver.md` + ADR 1081 in
+Design of record: `docs/design/name-fallback-resolver.md` + ADR 1082 in
 the DesertBreadBird repo. This doc covers the goat-client half.
 
 ## How it works

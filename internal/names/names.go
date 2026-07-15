@@ -1,5 +1,5 @@
 // Package names implements the device-wide half of the goat name fallback
-// resolver (DesertBreadBird ADR 1081 + docs/design/name-fallback-resolver.md).
+// resolver (DesertBreadBird ADR 1082 + docs/design/name-fallback-resolver.md).
 //
 // Failure class: node network up, mesh name service down or unreachable —
 // every mesh service dies *by name* while the WireGuard paths still work.
