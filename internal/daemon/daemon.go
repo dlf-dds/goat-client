@@ -368,6 +368,17 @@ func New(cfg Config) (*Daemon, error) {
 		// fronted again. Fired from the supervise goroutine; the
 		// re-apply runs detached so the callback never blocks it.
 		svc.SetForwarderStateFunc(func(up bool) { go d.onForwarderState(up) })
+		// Config-sourced nameservers are known now and don't depend on
+		// tunnel state — seed the forwarder's live tier so it forwards
+		// upstream even before (or without) a wg-cp0 connect. applyDNS
+		// re-feeds the merged values at every connect.
+		if len(meshDNS.Nameservers) > 0 {
+			ups := make([]string, 0, len(meshDNS.Nameservers))
+			for _, a := range meshDNS.Nameservers {
+				ups = append(ups, a.String())
+			}
+			svc.SetUpstreams(ups)
+		}
 		d.namesSvc = svc
 	}
 	return d, nil
