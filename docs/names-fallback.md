@@ -55,6 +55,8 @@ cache (replay bound). Any reader applying the same verify-at-read rule
 |---|---|---|
 | `GOAT_NAMES_LISTEN` | `127.0.0.1:53530` | forwarder bind address |
 | `--names-fronting` | `true` | point OS mesh-zone DNS at the forwarder (below); `--names-fronting=false` reverts to direct mesh nameservers |
+| `mesh_dns_servers` (config.toml) | unset | comma-separated mesh nameserver IPs; fills `tunnel.Config.DNSServers` when the bundle leaves it empty (the bundle schema carries no nameservers yet) |
+| `mesh_dns_search_domains` / `mesh_dns_match_domains` (config.toml) | unset | the mesh zones routed through those nameservers (search = suffix-append + route; match = route only) |
 
 The subsystem starts with the daemon in every mode; it is inert (no
 upstreams, no snapshot) until a bundle provides them. Construction

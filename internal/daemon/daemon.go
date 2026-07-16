@@ -189,6 +189,18 @@ type Daemon struct {
 	// re-apply the right variant (down → direct, up → fronted). nil
 	// when no DNS config is active (guarded by mu).
 	lastDNS *appliedDNS
+
+	// meshDNS carries the operator-set host-DNS values loaded from the
+	// config file (mode.PersistedConfig mesh_dns_* keys). They fill
+	// tunnel.Config's DNS fields when the bundle leaves them empty —
+	// the bundle schema does not carry nameservers yet. Immutable after
+	// New.
+	meshDNS tunneldns.Config
+
+	// persistedCfg is the config file as loaded at start-up. SetMode
+	// round-trips it through mode.Save so the mesh_dns_* keys survive
+	// a mode switch. Immutable after New except Mode.
+	persistedCfg mode.PersistedConfig
 }
 
 // appliedDNS is the re-apply context for forwarder health transitions.
@@ -261,14 +273,39 @@ func New(cfg Config) (*Daemon, error) {
 	if inboxDir == "" {
 		inboxDir = filepath.Join(filepath.Dir(cfg.BundlePath), "inbox")
 	}
+	// Load the persisted config once: mode fallback + operator-set
+	// mesh-DNS values (which apply regardless of how mode resolves).
+	var persisted mode.PersistedConfig
+	if cfg.ConfigPath != "" {
+		pc, err := mode.Load(cfg.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load config: %w", err)
+		}
+		persisted = pc
+	}
+	meshDNS := tunneldns.Config{
+		SearchDomains: persisted.MeshDNSSearchDomains,
+		MatchDomains:  persisted.MeshDNSMatchDomains,
+	}
+	for _, s := range persisted.MeshDNSServers {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("config mesh_dns_servers: %q is not an IP address: %w", s, err)
+		}
+		meshDNS.Nameservers = append(meshDNS.Nameservers, a)
+	}
+
 	// Resolve initial mode: explicit override > config file > Default.
 	resolved := cfg.InitialMode
-	if resolved == "" && cfg.ConfigPath != "" {
-		m, err := mode.LoadOrDefault(cfg.ConfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("load mode config: %w", err)
+	if resolved == "" {
+		if persisted.Mode != "" {
+			if !persisted.Mode.Valid() {
+				return nil, fmt.Errorf("persisted mode %q is not a known mode", persisted.Mode)
+			}
+			resolved = persisted.Mode
+		} else if cfg.ConfigPath != "" {
+			resolved = mode.Default
 		}
-		resolved = m
 	}
 	if resolved == "" {
 		resolved = mode.Default
@@ -298,6 +335,8 @@ func New(cfg Config) (*Daemon, error) {
 
 	d := &Daemon{
 		cfg:               cfg,
+		meshDNS:           meshDNS,
+		persistedCfg:      persisted,
 		currentMode:       resolved,
 		manager:           tunnelFactory(),
 		dnsAdapter:        dnsAdapter,
@@ -345,9 +384,23 @@ func (d *Daemon) applyDNS(ctx context.Context, ifaceName string, cfg tunnel.Conf
 		SearchDomains: cfg.SearchDomains,
 		MatchDomains:  cfg.MatchDomains,
 	}
+	// The bundle schema carries no nameservers yet (see
+	// tunnel.Config.DNSServers) — config-file mesh_dns_* values fill
+	// whichever fields the bundle left empty.
+	if len(direct.Nameservers) == 0 {
+		direct.Nameservers = d.meshDNS.Nameservers
+	}
+	if len(direct.SearchDomains) == 0 {
+		direct.SearchDomains = d.meshDNS.SearchDomains
+	}
+	if len(direct.MatchDomains) == 0 {
+		direct.MatchDomains = d.meshDNS.MatchDomains
+	}
 	if d.namesSvc != nil {
-		ups := make([]string, 0, len(cfg.DNSServers))
-		for _, a := range cfg.DNSServers {
+		// The forwarder's live tier forwards to the same resolvers the
+		// OS would use directly — including config-sourced ones.
+		ups := make([]string, 0, len(direct.Nameservers))
+		for _, a := range direct.Nameservers {
 			ups = append(ups, a.String())
 		}
 		d.namesSvc.SetUpstreams(ups)
@@ -934,9 +987,12 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 	}
 	// Also keep the legacy ConfigPath in sync for back-compat with the
 	// install-time --mode flag flow (next start-up's fallback when
-	// the store is empty).
+	// the store is empty). Round-trip the loaded config so the
+	// mesh_dns_* keys survive the mode switch.
 	if d.cfg.ConfigPath != "" {
-		if err := mode.Save(d.cfg.ConfigPath, mode.PersistedConfig{Mode: newMode}); err != nil {
+		pc := d.persistedCfg
+		pc.Mode = newMode
+		if err := mode.Save(d.cfg.ConfigPath, pc); err != nil {
 			d.logf("setMode persist legacy: %v", err)
 		}
 	}
