@@ -40,9 +40,19 @@ type Store struct {
 
 // NewStore opens (creating if needed) the store at dir, verifying
 // against roots — the same trust roots that verify enrollment bundles.
+// The dir is world-readable (0755) by design: the shared-store contract
+// (design §4.1) has goat-cli reading the daemon's bytes, and on system
+// installs the daemon runs as root/a service user. Nothing here is
+// secret — the snapshot pair is served unauthenticated at get.<site>,
+// and observed names are DNS-cache-equivalent; integrity comes from
+// verify-at-read, not permissions. The chmod converges stores created
+// 0700 by earlier releases.
 func NewStore(dir string, roots []*ecdsa.PublicKey) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create names store dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("names store dir perms: %w", err)
 	}
 	return &Store{dir: dir, roots: roots}, nil
 }

@@ -54,6 +54,7 @@ cache (replay bound). Any reader applying the same verify-at-read rule
 | Knob | Default | Meaning |
 |---|---|---|
 | `GOAT_NAMES_LISTEN` | `127.0.0.1:53530` | forwarder bind address |
+| `--names-fronting` | `true` | point OS mesh-zone DNS at the forwarder (below); `--names-fronting=false` reverts to direct mesh nameservers |
 
 The subsystem starts with the daemon in every mode; it is inert (no
 upstreams, no snapshot) until a bundle provides them. Construction
@@ -69,14 +70,39 @@ failure disables the subsystem, never the daemon.
 - `getStatus` over IPC carries the `names` block for programmatic
   consumers.
 
-## Wiring the OS at it
+## Wiring the OS at it (wired — v0.3.4)
 
-The forwarder binds loopback and answers standard DNS, so pointing the
-OS's per-domain resolution at it uses each platform's native mechanism
-(the same `internal/tunnel/dns` adapter goat-clientd already uses for
-mesh DNS: scutil match-domains on macOS, systemd-resolved routing
-domains on Linux, NRPT on Windows). Automatic wiring of the forwarder as
-a *secondary* resolver for the mesh zones is the follow-on increment —
-today the adapter points at the mesh nameservers only, and the forwarder
-is reachable explicitly (e.g. `dig @127.0.0.1 -p 53530 …`, or an
-`/etc/resolver/<zone>` file on macOS).
+When the daemon applies the wg-cp0 host-DNS config (wg-cp0-only and
+combined modes), it points the OS's mesh-zone resolution at the
+**forwarder** (`127.0.0.1:53530`) instead of the mesh nameservers
+directly — the standard local-stub pattern, chosen over "secondary
+resolver" because per-OS secondary semantics are inconsistent (macOS
+races servers, resolved round-robins). The forwarder does what it
+already does: live mesh nameservers first (never shadowed), signed
+snapshot + observed fallback only when they give nothing. Browsers and
+every other app get the outage protection with zero manual steps.
+netbird-only mode is untouched — the embedded netbird DNS path owns
+host DNS there.
+
+Per-platform mechanism (same `internal/tunnel/dns` adapter):
+
+| OS | Mechanism | Fronting |
+|---|---|---|
+| macOS | scutil dynamic-store match-domains + `ServerPort` | yes |
+| Linux | systemd-resolved `SetDNSEx` (systemd ≥ 246) | yes |
+| Windows | NRPT (`GenericDNSServers` — no port field) | no — direct mesh nameservers |
+
+**Fail open to live, never to nothing.** The forwarder is supervised
+(crash → rebind with backoff). If it cannot bind/serve, if the fronted
+apply fails, or on Windows, the daemon applies the mesh nameservers
+directly — today's pre-fronting behavior. When the forwarder recovers,
+the daemon re-fronts. `--names-fronting=false` turns the whole layer
+off.
+
+**Shared store readability.** The `names/` store dir is 0755 (the
+snapshot pair is public; observed names are DNS-cache-equivalent;
+integrity is verify-at-read) so goat-cli can read the daemon's bytes
+per the §4.1 contract — including on system installs where the daemon
+runs as root (macOS LaunchDaemon: `/Library/Application
+Support/goat-client/names/`) or a service user (systemd:
+`/var/lib/goat-client/names/`, StateDirectoryMode 0755).

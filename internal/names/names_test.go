@@ -320,6 +320,85 @@ func TestForwarderEndToEnd(t *testing.T) {
 	}
 }
 
+func TestForwarderSupervisionRebindAndHealth(t *testing.T) {
+	key := mintKey(t)
+	st, err := NewStore(t.TempDir(), []*ecdsa.PublicKey{&key.PublicKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := fixtureArtifact(t, 4, time.Now().Add(-2*time.Hour).Unix(), 2_592_000,
+		[]Record{{Name: testHost, IP: "100.64.0.10"}})
+	if _, err := st.PutSnapshot(artifact, signArtifact(t, key, artifact)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fwd := NewForwarder(st, func() []string { return nil }, 100*time.Millisecond)
+	// Short ladder: one quick attempt, then unhealthy while retrying.
+	fwd.rebindDelays = []time.Duration{50 * time.Millisecond}
+	transitions := make(chan bool, 8)
+	fwd.SetOnStateChange(func(up bool) { transitions <- up })
+
+	addr, err := fwd.Start(ctx, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fwd.Healthy() {
+		t.Fatal("forwarder must report healthy after Start")
+	}
+
+	query := func() (*dns.Msg, error) {
+		m := new(dns.Msg)
+		m.SetQuestion(dns.Fqdn(testHost), dns.TypeA)
+		c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+		resp, _, err := c.Exchange(m, addr)
+		return resp, err
+	}
+	if resp, err := query(); err != nil || len(resp.Answer) == 0 {
+		t.Fatalf("pre-crash query = %v, %v", resp, err)
+	}
+
+	// Crash the listener and squat its port so the rebind ladder
+	// exhausts → the forwarder must go unhealthy (the daemon's cue to
+	// fail open to direct mesh DNS).
+	fwd.mu.Lock()
+	srv := fwd.server
+	fwd.mu.Unlock()
+	if err := srv.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	squat, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatalf("squat %s: %v", addr, err)
+	}
+	select {
+	case up := <-transitions:
+		if up {
+			t.Fatal("first transition must be down")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no down transition after crash + squat")
+	}
+	if fwd.Healthy() {
+		t.Fatal("forwarder must report unhealthy while the port is squatted")
+	}
+
+	// Release the port → supervision rebinds → healthy again, serving.
+	_ = squat.Close()
+	select {
+	case up := <-transitions:
+		if !up {
+			t.Fatal("expected recovery transition")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no recovery transition after port release")
+	}
+	if resp, err := query(); err != nil || len(resp.Answer) == 0 {
+		t.Fatalf("post-recovery query = %v, %v", resp, err)
+	}
+}
+
 func TestRefreshOverHTTP(t *testing.T) {
 	key := mintKey(t)
 	st, err := NewStore(t.TempDir(), []*ecdsa.PublicKey{&key.PublicKey})

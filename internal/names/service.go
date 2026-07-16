@@ -59,6 +59,17 @@ func NewService(dir string, roots []*ecdsa.PublicKey) (*Service, error) {
 // its own successful connections if it wants to).
 func (s *Service) Store() *Store { return s.store }
 
+// ForwarderAddr returns the forwarder's bound address ("" before Run).
+func (s *Service) ForwarderAddr() string { return s.fwd.Addr() }
+
+// ForwarderHealthy reports whether the forwarder currently holds its
+// listener — the gate for fronting OS mesh-zone resolution at it.
+func (s *Service) ForwarderHealthy() bool { return s.fwd.Healthy() }
+
+// SetForwarderStateFunc registers the forwarder health-transition
+// callback (see Forwarder.SetOnStateChange). Set before Run.
+func (s *Service) SetForwarderStateFunc(fn func(up bool)) { s.fwd.SetOnStateChange(fn) }
+
 // SetUpstreams records the mesh nameservers the OS is being pointed at —
 // the forwarder's live tier. Safe to call at every (re)connect.
 func (s *Service) SetUpstreams(servers []string) {

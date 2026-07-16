@@ -32,7 +32,10 @@ CapabilityBoundingSet=CAP_NET_ADMIN
 ConfigurationDirectory=goat-client
 ConfigurationDirectoryMode=0750
 StateDirectory=goat-client
-StateDirectoryMode=0750
+# 0755 so goat-cli (any local user) can traverse into names/ — the
+# shared name store (verify-at-read; nothing secret at dir level).
+# Secrets keep their own file modes (bundle.cbor 0600, profiles/ 0700).
+StateDirectoryMode=0755
 CacheDirectory=goat-client
 CacheDirectoryMode=0750
 LogsDirectory=goat-client

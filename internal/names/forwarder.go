@@ -28,9 +28,20 @@ type Forwarder struct {
 	upstreams func() []string // e.g. ["100.64.165.203:5353"]; re-read per query
 	timeout   time.Duration
 
-	mu       sync.Mutex
-	server   *dns.Server
-	addr     string
+	// rebindDelays paces listener recovery after a serve crash. The
+	// forwarder may be fronting OS mesh-zone resolution (ADR 1082
+	// unification), so it is supervised: crash → rebind with backoff;
+	// exhausted backoff → unhealthy (onState(false), the daemon fails
+	// open to direct mesh DNS) while retries continue at the last
+	// delay; recovery → healthy again (onState(true)).
+	rebindDelays []time.Duration
+
+	mu      sync.Mutex
+	server  *dns.Server
+	addr    string
+	healthy bool
+	onState func(up bool)
+
 	lastFall atomic.Int64 // unix seconds of the last fallback-served answer
 	served   atomic.Int64 // total fallback answers served
 }
@@ -42,31 +53,102 @@ func NewForwarder(store *Store, upstreams func() []string, timeout time.Duration
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
-	return &Forwarder{store: store, upstreams: upstreams, timeout: timeout}
+	return &Forwarder{
+		store:        store,
+		upstreams:    upstreams,
+		timeout:      timeout,
+		rebindDelays: []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second},
+	}
+}
+
+// SetOnStateChange registers the health transition callback: up=false
+// when the forwarder loses its listener and cannot immediately get it
+// back, up=true when it recovers. Called from the supervise goroutine —
+// implementations must not block. Set before Start.
+func (f *Forwarder) SetOnStateChange(fn func(up bool)) {
+	f.mu.Lock()
+	f.onState = fn
+	f.mu.Unlock()
 }
 
 // Start binds the UDP listener (addr like "127.0.0.1:53535") and serves
-// until ctx is cancelled. Returns the bound address (useful with :0).
+// until ctx is cancelled, supervised: a crashed listener is rebound with
+// backoff, and health transitions fire the SetOnStateChange callback.
+// Returns the bound address (useful with :0).
 func (f *Forwarder) Start(ctx context.Context, addr string) (string, error) {
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		return "", fmt.Errorf("names forwarder bind %s: %w", addr, err)
 	}
-	srv := &dns.Server{PacketConn: conn, Handler: dns.HandlerFunc(f.handle)}
+	bound := conn.LocalAddr().String()
 	f.mu.Lock()
-	f.server = srv
-	f.addr = conn.LocalAddr().String()
+	f.addr = bound
+	f.healthy = true
 	f.mu.Unlock()
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown()
-	}()
-	go func() {
-		if err := srv.ActivateAndServe(); err != nil && ctx.Err() == nil {
-			log.Printf("names forwarder: serve ended: %v", err)
+	go f.supervise(ctx, bound, conn)
+	return bound, nil
+}
+
+// supervise serves on conn, and on unexpected serve failure rebinds the
+// same address with backoff. Exhausting the backoff ladder marks the
+// forwarder unhealthy (the daemon fails open to direct mesh DNS) while
+// retries continue at the final delay; a successful rebind marks it
+// healthy again.
+func (f *Forwarder) supervise(ctx context.Context, bound string, conn net.PacketConn) {
+	for {
+		srv := &dns.Server{PacketConn: conn, Handler: dns.HandlerFunc(f.handle)}
+		f.mu.Lock()
+		f.server = srv
+		f.mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = srv.Shutdown()
+			case <-done:
+			}
+		}()
+		err := srv.ActivateAndServe()
+		close(done)
+		if ctx.Err() != nil {
+			return
 		}
-	}()
-	return f.addr, nil
+		log.Printf("names forwarder: serve ended unexpectedly: %v — rebinding %s", err, bound)
+
+		conn = nil
+		for i := 0; conn == nil; i++ {
+			delay := f.rebindDelays[min(i, len(f.rebindDelays)-1)]
+			if i == len(f.rebindDelays) {
+				// Ladder exhausted — fail open to live DNS while we keep
+				// trying at the final delay.
+				f.setHealthy(false)
+				log.Printf("names forwarder: cannot rebind %s — marked unhealthy (OS falls back to direct mesh DNS); retrying every %s", bound, delay)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			c, err := net.ListenPacket("udp", bound)
+			if err != nil {
+				continue
+			}
+			conn = c
+		}
+		f.setHealthy(true)
+	}
+}
+
+// setHealthy records a health transition and fires the callback on change.
+func (f *Forwarder) setHealthy(up bool) {
+	f.mu.Lock()
+	changed := f.healthy != up
+	f.healthy = up
+	fn := f.onState
+	f.mu.Unlock()
+	if changed && fn != nil {
+		fn(up)
+	}
 }
 
 // Addr returns the bound address ("" before Start).
@@ -74,6 +156,13 @@ func (f *Forwarder) Addr() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.addr
+}
+
+// Healthy reports whether the forwarder currently holds its listener.
+func (f *Forwarder) Healthy() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.healthy
 }
 
 // FallbackStats reports (total fallback answers, time of the last one).

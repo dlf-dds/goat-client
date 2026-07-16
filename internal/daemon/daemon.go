@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -135,6 +136,20 @@ type Config struct {
 	// real *filedrop.Server; tests inject a fake to drive the receive-side
 	// reconcile loop without binding real sockets.
 	FileServerFactory func(inbox string, auth filedrop.Authorizer, onRecv func(filedrop.Received)) fileServer
+
+	// NamesFronting fronts the OS's mesh-zone resolution with the local
+	// names forwarder (ADR 1082 unification): the host DNS adapter is
+	// pointed at the forwarder's loopback address instead of the mesh
+	// nameservers directly, and the forwarder does what it already does
+	// — live upstream first (never shadowed), signed snapshot + observed
+	// fallback when the name plane is out. Applies only to the wg-cp0
+	// host-DNS path (wg-cp0-only + combined modes); netbird-only mode's
+	// embedded netbird DNS path is untouched. Fail-open: an unhealthy
+	// forwarder, a fronting apply failure, or a platform that cannot
+	// express a resolver port (Windows NRPT) all fall back to the direct
+	// mesh nameservers. goat-clientd's --names-fronting flag defaults
+	// this to true; the zero value here is off (test-safe).
+	NamesFronting bool
 }
 
 // Daemon is the long-lived orchestrator. Safe for concurrent use by the
@@ -168,6 +183,18 @@ type Daemon struct {
 	inboxDir          string
 	fileServerFactory func(inbox string, auth filedrop.Authorizer, onRecv func(filedrop.Received)) fileServer
 	received          *receivedRing
+
+	// lastDNS remembers the direct (mesh-nameserver) host-DNS config
+	// most recently applied, so a forwarder health transition can
+	// re-apply the right variant (down → direct, up → fronted). nil
+	// when no DNS config is active (guarded by mu).
+	lastDNS *appliedDNS
+}
+
+// appliedDNS is the re-apply context for forwarder health transitions.
+type appliedDNS struct {
+	iface  string
+	direct tunneldns.Config
 }
 
 // peerConnSource supplies live per-peer RTT keyed by peer IP for
@@ -297,9 +324,107 @@ func New(cfg Config) (*Daemon, error) {
 		d.logf("names subsystem disabled: %v", nerr)
 	} else {
 		svc.SetSiteFunc(d.currentSiteZone)
+		// Forwarder health drives which host-DNS variant is applied:
+		// down → direct mesh nameservers (fail open to live), up →
+		// fronted again. Fired from the supervise goroutine; the
+		// re-apply runs detached so the callback never blocks it.
+		svc.SetForwarderStateFunc(func(up bool) { go d.onForwarderState(up) })
 		d.namesSvc = svc
 	}
 	return d, nil
+}
+
+// applyDNS records the direct host-DNS config derived from the tunnel
+// config, feeds the mesh nameservers to the names forwarder as its live
+// upstreams, and applies the fronted or direct variant per the current
+// forwarder health. DNS apply failures are non-fatal (logged) — the
+// tunnel stays up either way.
+func (d *Daemon) applyDNS(ctx context.Context, ifaceName string, cfg tunnel.Config) {
+	direct := tunneldns.Config{
+		Nameservers:   cfg.DNSServers,
+		SearchDomains: cfg.SearchDomains,
+		MatchDomains:  cfg.MatchDomains,
+	}
+	if d.namesSvc != nil {
+		ups := make([]string, 0, len(cfg.DNSServers))
+		for _, a := range cfg.DNSServers {
+			ups = append(ups, a.String())
+		}
+		d.namesSvc.SetUpstreams(ups)
+	}
+	d.mu.Lock()
+	d.lastDNS = &appliedDNS{iface: ifaceName, direct: direct}
+	d.mu.Unlock()
+	d.applyDNSCurrent(ctx, ifaceName, direct)
+}
+
+// applyDNSCurrent applies the fronted variant when the fronting knob is
+// on and the forwarder is healthy, falling back to the direct config on
+// any fronting failure — a names-subsystem problem must never break
+// live DNS.
+func (d *Daemon) applyDNSCurrent(ctx context.Context, ifaceName string, direct tunneldns.Config) {
+	if d.cfg.NamesFronting && d.namesSvc != nil && d.namesSvc.ForwarderHealthy() {
+		addr := d.namesSvc.ForwarderAddr()
+		if fronted, ok := frontedDNSConfig(direct, addr); ok {
+			err := d.dnsAdapter.Apply(ctx, ifaceName, fronted)
+			if err == nil {
+				d.logf("mesh DNS fronted by names forwarder at %s (live-first, signed-snapshot fallback)", addr)
+				return
+			}
+			if errors.Is(err, tunneldns.ErrPortUnsupported) {
+				d.logf("names fronting not expressible on this platform — using direct mesh DNS")
+			} else {
+				d.logf("names fronting apply failed (%v) — using direct mesh DNS", err)
+			}
+		}
+	}
+	if err := d.dnsAdapter.Apply(ctx, ifaceName, direct); err != nil {
+		d.logf("dns adapter apply failed (non-fatal): %v", err)
+	}
+}
+
+// frontedDNSConfig derives the fronted variant of a direct host-DNS
+// config: same domains, nameserver replaced by the forwarder's loopback
+// address + port. ok=false when forwarderAddr is unusable.
+func frontedDNSConfig(direct tunneldns.Config, forwarderAddr string) (tunneldns.Config, bool) {
+	ap, err := netip.ParseAddrPort(forwarderAddr)
+	if err != nil {
+		return tunneldns.Config{}, false
+	}
+	out := direct
+	out.Nameservers = []netip.Addr{ap.Addr()}
+	out.Port = ap.Port()
+	return out, true
+}
+
+// onForwarderState re-applies host DNS on a forwarder health transition
+// while a mesh DNS config is active: down → direct (fail open to live),
+// up → fronted again.
+func (d *Daemon) onForwarderState(up bool) {
+	d.mu.RLock()
+	last := d.lastDNS
+	d.mu.RUnlock()
+	if last == nil {
+		return
+	}
+	if up {
+		d.logf("names forwarder recovered — re-fronting mesh DNS")
+	} else {
+		d.logf("names forwarder down — reverting OS to direct mesh DNS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d.applyDNSCurrent(ctx, last.iface, last.direct)
+}
+
+// restoreDNS clears the re-apply context and returns the host resolver
+// to its pre-tunnel state. Every teardown path goes through here so a
+// later forwarder transition can't resurrect a torn-down DNS config.
+func (d *Daemon) restoreDNS(ctx context.Context) error {
+	d.mu.Lock()
+	d.lastDNS = nil
+	d.mu.Unlock()
+	return d.dnsAdapter.Restore(ctx)
 }
 
 // currentSiteZone derives (site, zone) for the names refresh origin
@@ -505,7 +630,7 @@ func (d *Daemon) setPeerConn(c peerConnSource) {
 
 // Shutdown takes the tunnel down + closes the manager.
 func (d *Daemon) Shutdown(ctx context.Context) error {
-	if err := d.dnsAdapter.Restore(ctx); err != nil {
+	if err := d.restoreDNS(ctx); err != nil {
 		d.logf("dns restore: %v", err)
 	}
 	if err := d.manager.Disconnect(ctx); err != nil {
@@ -735,7 +860,7 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 	// Reconcile wg-cp0 outer leg.
 	if prev.IncludesWGCP0() && !newMode.IncludesWGCP0() {
 		// Tear down the outer tunnel.
-		if err := d.dnsAdapter.Restore(ctx); err != nil {
+		if err := d.restoreDNS(ctx); err != nil {
 			d.logf("setMode dns restore: %v", err)
 		}
 		if err := d.manager.Disconnect(ctx); err != nil {
@@ -1021,21 +1146,7 @@ func (d *Daemon) Connect(ctx context.Context) error {
 			d.mu.Unlock()
 			return err
 		}
-		dnsCfg := tunneldns.Config{
-			Nameservers:   cfg.DNSServers,
-			SearchDomains: cfg.SearchDomains,
-			MatchDomains:  cfg.MatchDomains,
-		}
-		if d.namesSvc != nil {
-			ups := make([]string, 0, len(cfg.DNSServers))
-			for _, a := range cfg.DNSServers {
-				ups = append(ups, a.String())
-			}
-			d.namesSvc.SetUpstreams(ups)
-		}
-		if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
-			d.logf("dns adapter apply failed (non-fatal): %v", err)
-		}
+		d.applyDNS(ctx, cfg.InterfaceName, cfg)
 		d.logf("wg-cp0 up to %s", cfg.Peer.Endpoint)
 	}
 
@@ -1074,7 +1185,7 @@ func (d *Daemon) Disconnect(ctx context.Context) error {
 	if currentMode.IncludesWGCP0() {
 		// Tear DNS down before the tunnel — the host should stop trying to
 		// use the wg-cp0 resolver before the route to it disappears.
-		if err := d.dnsAdapter.Restore(ctx); err != nil {
+		if err := d.restoreDNS(ctx); err != nil {
 			d.logf("dns adapter restore failed (non-fatal): %v", err)
 		}
 		if err := d.manager.Disconnect(ctx); err != nil {
@@ -1353,14 +1464,7 @@ func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, erro
 			if err := d.manager.Connect(ctx); err != nil {
 				d.logf("setActiveProfile wg-cp0 up: %v", err)
 			} else {
-				dnsCfg := tunneldns.Config{
-					Nameservers:   cfg.DNSServers,
-					SearchDomains: cfg.SearchDomains,
-					MatchDomains:  cfg.MatchDomains,
-				}
-				if err := d.dnsAdapter.Apply(ctx, cfg.InterfaceName, dnsCfg); err != nil {
-					d.logf("setActiveProfile dns apply: %v", err)
-				}
+				d.applyDNS(ctx, cfg.InterfaceName, cfg)
 			}
 		}
 	} else if !errors.Is(err, tunnel.ErrNoEndpoint) {
@@ -1391,7 +1495,7 @@ func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, erro
 // Idempotent; ignores per-leg errors past the first log line.
 func (d *Daemon) tearDownMode(ctx context.Context, m mode.Mode) error {
 	if m.IncludesWGCP0() {
-		_ = d.dnsAdapter.Restore(ctx)
+		_ = d.restoreDNS(ctx)
 		if err := d.manager.Disconnect(ctx); err != nil {
 			d.logf("teardown wg-cp0: %v", err)
 		}
@@ -1418,7 +1522,7 @@ func (d *Daemon) tearDownMode(ctx context.Context, m mode.Mode) error {
 // profile (the legs must come down even if the user later picks a
 // different mode).
 func (d *Daemon) tearDownAll(ctx context.Context) error {
-	_ = d.dnsAdapter.Restore(ctx)
+	_ = d.restoreDNS(ctx)
 	if err := d.manager.Disconnect(ctx); err != nil {
 		d.logf("tearDownAll wg-cp0: %v", err)
 	}
