@@ -11,12 +11,29 @@ import (
 )
 
 // PersistedConfig is the on-disk shape — a tiny TOML-ish key=value file
-// (no real TOML library, since we only carry one field today). Keeping
-// it minimal lets packagers drop a single line into /etc/goat-client/
-// config.toml without dragging a parser in.
+// (no real TOML library — a handful of scalar keys). Keeping it minimal
+// lets packagers drop lines into /etc/goat-client/config.toml without
+// dragging a parser in.
 type PersistedConfig struct {
 	// Mode is the v0.2 selector. Empty value means "use Default".
 	Mode Mode
+
+	// MeshDNSServers / MeshDNSSearchDomains / MeshDNSMatchDomains are
+	// the operator-set host-DNS values for the wg-cp0 mesh zones,
+	// comma-separated on disk:
+	//
+	//   mesh_dns_servers = "100.64.165.203"
+	//   mesh_dns_search_domains = "efdi.netbird.efdi-backbone.net"
+	//   mesh_dns_match_domains = "netbird.efdi-backbone.net"
+	//
+	// They fill tunnel.Config's DNS fields when the bundle leaves them
+	// empty (the bundle schema does not carry nameservers yet — this is
+	// the out-of-band path tunnel.Config.DNSServers documents). With
+	// names fronting on, these are also what the forwarder forwards to
+	// (live-first) while the OS points at the forwarder.
+	MeshDNSServers       []string
+	MeshDNSSearchDomains []string
+	MeshDNSMatchDomains  []string
 }
 
 // DefaultConfigPath returns the platform-conventional config-file path
@@ -76,7 +93,20 @@ func Save(path string, cfg PersistedConfig) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	if _, err := fmt.Fprintf(tmp, "# goat-client config (v0.2). Managed by `goat-client setmode` or the installer.\nmode = %q\n", cfg.Mode); err != nil {
+	var body strings.Builder
+	fmt.Fprintf(&body, "# goat-client config (v0.2). Managed by `goat-client setmode` or the installer.\nmode = %q\n", cfg.Mode)
+	// Preserve operator-set mesh-DNS keys — a setmode round-trip must
+	// never drop them.
+	if len(cfg.MeshDNSServers) > 0 {
+		fmt.Fprintf(&body, "mesh_dns_servers = %q\n", strings.Join(cfg.MeshDNSServers, ","))
+	}
+	if len(cfg.MeshDNSSearchDomains) > 0 {
+		fmt.Fprintf(&body, "mesh_dns_search_domains = %q\n", strings.Join(cfg.MeshDNSSearchDomains, ","))
+	}
+	if len(cfg.MeshDNSMatchDomains) > 0 {
+		fmt.Fprintf(&body, "mesh_dns_match_domains = %q\n", strings.Join(cfg.MeshDNSMatchDomains, ","))
+	}
+	if _, err := tmp.WriteString(body.String()); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("write: %w", err)
@@ -113,13 +143,14 @@ func LoadOrDefault(path string) (Mode, error) {
 	return cfg.Mode, nil
 }
 
-// parse is a minimal `mode = "..."` extractor; intentionally does not
-// pull in a TOML library for one field.
+// parse is a minimal key = "value" extractor; intentionally does not
+// pull in a TOML library for a handful of scalar keys.
 func parse(r io.Reader) (PersistedConfig, error) {
 	buf, err := io.ReadAll(r)
 	if err != nil {
 		return PersistedConfig{}, fmt.Errorf("read: %w", err)
 	}
+	var cfg PersistedConfig
 	for _, raw := range strings.Split(string(buf), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -129,19 +160,37 @@ func parse(r io.Reader) (PersistedConfig, error) {
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(k) != "mode" {
-			continue
+		key := strings.TrimSpace(k)
+		val := strings.Trim(strings.TrimSpace(v), "\"'")
+		switch key {
+		case "mode":
+			if val == "" {
+				continue
+			}
+			m, perr := Parse(val)
+			if perr != nil {
+				return PersistedConfig{}, fmt.Errorf("parse mode %q: %w", val, perr)
+			}
+			cfg.Mode = m
+		case "mesh_dns_servers":
+			cfg.MeshDNSServers = splitCSV(val)
+		case "mesh_dns_search_domains":
+			cfg.MeshDNSSearchDomains = splitCSV(val)
+		case "mesh_dns_match_domains":
+			cfg.MeshDNSMatchDomains = splitCSV(val)
 		}
-		val := strings.TrimSpace(v)
-		val = strings.Trim(val, "\"'")
-		if val == "" {
-			return PersistedConfig{}, nil
-		}
-		m, perr := Parse(val)
-		if perr != nil {
-			return PersistedConfig{}, fmt.Errorf("parse mode %q: %w", val, perr)
-		}
-		return PersistedConfig{Mode: m}, nil
 	}
-	return PersistedConfig{}, nil
+	return cfg, nil
+}
+
+// splitCSV splits a comma-separated value list, trimming whitespace and
+// dropping empties. Empty input yields nil.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

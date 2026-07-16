@@ -46,6 +46,7 @@ func main() {
 	headlessFlag := flag.Bool("headless", false, "explicit marker for headless deployments (no-op — goat-clientd never imports a GUI)")
 	importBundleFlag := flag.String("import-bundle", "", "one-shot: validate + persist the bundle at this path, then exit 0 (no IPC server)")
 	autoConnectFlag := flag.Bool("auto-connect", true, "after loading a persisted bundle, bring the active mode's subsystems up automatically (idempotent; no-op if already connected or no bundle). Disable for GUI installs where the user clicks Connect explicitly.")
+	namesFrontingFlag := flag.Bool("names-fronting", true, "point OS mesh-zone DNS at the local names forwarder (live-first, signed-snapshot fallback when mesh DNS is out). Disable to point the OS at the mesh nameservers directly.")
 	flag.Parse()
 
 	_ = headlessFlag // accepted for explicit operator-facing clarity
@@ -74,9 +75,10 @@ func main() {
 		SocketPath:  *socketPath,
 		TrustRoots:  trustRoots,
 		TrustedUid:  uint32(os.Getuid()),
-		LogTailSize: 256,
-		ConfigPath:  *configPath,
-		InitialMode: initialMode,
+		LogTailSize:   256,
+		ConfigPath:    *configPath,
+		InitialMode:   initialMode,
+		NamesFronting: *namesFrontingFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon init: %v\n", err)

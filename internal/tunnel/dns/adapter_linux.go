@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ const (
 	systemdManagerFlushCaches    = systemdManagerInterface + ".FlushCaches"
 	systemdLinkInterface         = "org.freedesktop.resolve1.Link"
 	systemdLinkSetDNS            = systemdLinkInterface + ".SetDNS"
+	systemdLinkSetDNSEx          = systemdLinkInterface + ".SetDNSEx"
 	systemdLinkSetDomains        = systemdLinkInterface + ".SetDomains"
 	systemdLinkSetDefaultRoute   = systemdLinkInterface + ".SetDefaultRoute"
 	systemdLinkSetDNSSEC         = systemdLinkInterface + ".SetDNSSEC"
@@ -60,6 +62,17 @@ const (
 type systemdDNSInput struct {
 	Family  int32
 	Address []byte
+}
+
+// systemdDNSExInput is the (iayqs) D-Bus argument for SetDNSEx — family,
+// address, port, and server name (SNI for DNS-over-TLS; empty for us).
+// SetDNSEx exists since systemd 246 and is the only resolve1 call that can
+// express a non-53 resolver port (the names-forwarder fronting case).
+type systemdDNSExInput struct {
+	Family  int32
+	Address []byte
+	Port    uint16
+	Name    string
 }
 
 // systemdDomainInput is the (sb) D-Bus argument for SetDomains — domain name
@@ -90,24 +103,27 @@ func (s *systemdAdapter) Apply(ctx context.Context, ifaceName string, cfg Config
 		return fmt.Errorf("dns/linux: resolve link %s: %w", ifaceName, err)
 	}
 
-	dnsArgs := make([]systemdDNSInput, 0, len(cfg.Nameservers))
-	for _, ns := range cfg.Nameservers {
-		family := int32(unix.AF_INET)
-		if ns.Is6() {
-			family = unix.AF_INET6
+	if cfg.Port != 0 && cfg.Port != 53 {
+		// Non-default port needs SetDNSEx (systemd ≥ 246). Failure here
+		// surfaces to the caller, which falls back to the direct (port
+		// 53) config — never leave the link without a resolver.
+		dnsArgs := make([]systemdDNSExInput, 0, len(cfg.Nameservers))
+		for _, ns := range cfg.Nameservers {
+			family, addr := dbusAddr(ns)
+			dnsArgs = append(dnsArgs, systemdDNSExInput{Family: family, Address: addr, Port: cfg.Port})
 		}
-		ip := ns.As16()
-		var addr []byte
-		if ns.Is4() {
-			addr = ip[12:]
-		} else {
-			addr = ip[:]
+		if err := s.callLink(ctx, systemdLinkSetDNSEx, dnsArgs); err != nil {
+			return fmt.Errorf("dns/linux: SetDNSEx (port %d): %w", cfg.Port, err)
 		}
-		dnsArgs = append(dnsArgs, systemdDNSInput{Family: family, Address: addr})
-	}
-
-	if err := s.callLink(ctx, systemdLinkSetDNS, dnsArgs); err != nil {
-		return fmt.Errorf("dns/linux: SetDNS: %w", err)
+	} else {
+		dnsArgs := make([]systemdDNSInput, 0, len(cfg.Nameservers))
+		for _, ns := range cfg.Nameservers {
+			family, addr := dbusAddr(ns)
+			dnsArgs = append(dnsArgs, systemdDNSInput{Family: family, Address: addr})
+		}
+		if err := s.callLink(ctx, systemdLinkSetDNS, dnsArgs); err != nil {
+			return fmt.Errorf("dns/linux: SetDNS: %w", err)
+		}
 	}
 
 	// resolve1 defaults DNSSEC + DNSOverTLS to "yes" on some distros, which
@@ -166,6 +182,20 @@ func (s *systemdAdapter) Restore(ctx context.Context) error {
 		log.Printf("dns/linux: FlushCaches failed during Restore: %v", err)
 	}
 	return nil
+}
+
+// dbusAddr renders a netip.Addr as the resolve1 (family, address-bytes)
+// pair shared by SetDNS and SetDNSEx.
+func dbusAddr(ns netip.Addr) (int32, []byte) {
+	family := int32(unix.AF_INET)
+	if ns.Is6() {
+		family = unix.AF_INET6
+	}
+	ip := ns.As16()
+	if ns.Is4() {
+		return family, append([]byte(nil), ip[12:]...)
+	}
+	return family, append([]byte(nil), ip[:]...)
 }
 
 // resolveLink looks up the resolve1 Link object for ifaceName via the system

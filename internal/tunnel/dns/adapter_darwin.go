@@ -65,6 +65,10 @@ func (s *scutilAdapter) Apply(ctx context.Context, ifaceName string, cfg Config)
 	// the Linux/Windows analogues. Multi-server fan-out is enhancement
 	// scope.
 	primary := cfg.Nameservers[0].String()
+	port := int(cfg.Port)
+	if port == 0 {
+		port = defaultDNSPort
+	}
 
 	if err := s.removeKeysContaining(ctx, scutilSearchKind); err != nil {
 		log.Printf("dns/darwin: cleanup old search keys: %v", err)
@@ -74,12 +78,12 @@ func (s *scutilAdapter) Apply(ctx context.Context, ifaceName string, cfg Config)
 	}
 
 	if len(cfg.SearchDomains) > 0 {
-		if err := s.addBatchedDomains(ctx, scutilSearchKind, cfg.SearchDomains, primary, true); err != nil {
+		if err := s.addBatchedDomains(ctx, scutilSearchKind, cfg.SearchDomains, primary, port, true); err != nil {
 			return fmt.Errorf("dns/darwin: add search domains: %w", err)
 		}
 	}
 	if len(cfg.MatchDomains) > 0 {
-		if err := s.addBatchedDomains(ctx, scutilMatchKind, cfg.MatchDomains, primary, false); err != nil {
+		if err := s.addBatchedDomains(ctx, scutilMatchKind, cfg.MatchDomains, primary, port, false); err != nil {
 			return fmt.Errorf("dns/darwin: add match domains: %w", err)
 		}
 	}
@@ -112,12 +116,12 @@ func (s *scutilAdapter) Restore(ctx context.Context) error {
 // addBatchedDomains splits a domain list into scutil-safe batches and creates
 // one State:/ key per batch. Each batch becomes an indexed key (suffix-0,
 // suffix-1, ...) so scutil's per-key arg/byte limits aren't hit.
-func (s *scutilAdapter) addBatchedDomains(ctx context.Context, suffix string, domains []string, server string, enableSearch bool) error {
+func (s *scutilAdapter) addBatchedDomains(ctx context.Context, suffix string, domains []string, server string, port int, enableSearch bool) error {
 	batches := splitDomainsIntoBatches(domains)
 	for i, batch := range batches {
 		key := fmt.Sprintf("State:/Network/Service/goat-client-%s-%d/DNS", suffix, i)
 		joined := strings.Join(batch, " ")
-		if err := s.writeDNSState(ctx, key, joined, server, enableSearch); err != nil {
+		if err := s.writeDNSState(ctx, key, joined, server, port, enableSearch); err != nil {
 			return fmt.Errorf("write state %s: %w", key, err)
 		}
 		s.createdKeys[key] = struct{}{}
@@ -158,7 +162,7 @@ func splitDomainsIntoBatches(domains []string) [][]string {
 // writeDNSState builds a scutil command block that creates a single
 // State:/Network/Service/goat-client-<suffix>-<i>/DNS dynamic-store entry.
 // The block is fed to scutil over stdin in one shot.
-func (s *scutilAdapter) writeDNSState(ctx context.Context, key, domains, server string, enableSearch bool) error {
+func (s *scutilAdapter) writeDNSState(ctx context.Context, key, domains, server string, port int, enableSearch bool) error {
 	noSearch := "1"
 	if enableSearch {
 		noSearch = "0"
@@ -170,7 +174,7 @@ func (s *scutilAdapter) writeDNSState(ctx context.Context, key, domains, server 
 	fmt.Fprintf(&sb, "d.add SupplementalMatchDomains * %s\n", domains)
 	fmt.Fprintf(&sb, "d.add SupplementalMatchDomainsNoSearch # %s\n", noSearch)
 	fmt.Fprintf(&sb, "d.add ServerAddresses * %s\n", server)
-	fmt.Fprintf(&sb, "d.add ServerPort # %s\n", strconv.Itoa(defaultDNSPort))
+	fmt.Fprintf(&sb, "d.add ServerPort # %s\n", strconv.Itoa(port))
 	fmt.Fprintf(&sb, "set %s\n", key)
 	sb.WriteString("quit\n")
 	return runScutil(ctx, sb.String())

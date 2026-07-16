@@ -47,6 +47,16 @@ type Config struct {
 	// through Nameservers. Empty means the search-domain list also
 	// serves as the match list (catch-all behaviour).
 	MatchDomains []string
+
+	// Port is the resolver port the OS is pointed at. Zero means the
+	// DNS default (53). Non-default ports carry the names-forwarder
+	// fronting case (ADR 1082 unification: the OS resolves mesh zones
+	// via the daemon's loopback forwarder). Per-OS support varies:
+	// macOS writes scutil ServerPort, systemd-resolved uses SetDNSEx,
+	// Windows NRPT cannot express a port — those adapters return
+	// ErrPortUnsupported and the caller falls back to direct (port
+	// 53) nameservers so a fronting failure never breaks live DNS.
+	Port uint16
 }
 
 // Adapter is the per-platform host-DNS contract.
@@ -69,3 +79,9 @@ func New() (Adapter, error) {
 
 // ErrNotImplemented is returned by stub adapter methods.
 var ErrNotImplemented = errors.New("dns: not implemented on this platform")
+
+// ErrPortUnsupported is returned by Apply when Config.Port asks for a
+// non-default resolver port on a platform whose host-DNS mechanism
+// cannot express one (Windows NRPT). Callers treat it as "front not
+// possible here" and re-apply the direct config.
+var ErrPortUnsupported = errors.New("dns: non-default resolver port not supported on this platform")

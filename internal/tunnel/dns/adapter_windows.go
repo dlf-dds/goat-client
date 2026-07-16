@@ -60,6 +60,12 @@ func (n *nrptAdapter) Apply(ctx context.Context, ifaceName string, cfg Config) e
 	if len(cfg.Nameservers) == 0 {
 		return nil
 	}
+	if cfg.Port != 0 && cfg.Port != 53 {
+		// NRPT's GenericDNSServers cannot carry a port — the
+		// names-forwarder fronting case is not expressible here. The
+		// caller falls back to the direct (port 53) config.
+		return ErrPortUnsupported
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 

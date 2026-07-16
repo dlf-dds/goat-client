@@ -77,6 +77,50 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMeshDNSKeysRoundTripAndSurviveSetMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	in := PersistedConfig{
+		Mode:                 Combined,
+		MeshDNSServers:       []string{"100.64.165.203", "100.64.174.204"},
+		MeshDNSSearchDomains: []string{"efdi.netbird.example.net"},
+		MeshDNSMatchDomains:  []string{"netbird.example.net"},
+	}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MeshDNSServers) != 2 || cfg.MeshDNSServers[1] != "100.64.174.204" {
+		t.Errorf("servers = %v", cfg.MeshDNSServers)
+	}
+	if len(cfg.MeshDNSSearchDomains) != 1 || len(cfg.MeshDNSMatchDomains) != 1 {
+		t.Errorf("domains = %v / %v", cfg.MeshDNSSearchDomains, cfg.MeshDNSMatchDomains)
+	}
+
+	// A setmode-style rewrite (same config, new mode) must keep the keys.
+	cfg.Mode = WGCP0Only
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save after mode flip: %v", err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load again: %v", err)
+	}
+	if again.Mode != WGCP0Only || len(again.MeshDNSServers) != 2 {
+		t.Errorf("mode flip dropped keys: %+v", again)
+	}
+
+	// Whitespace + empties in the CSV are tolerated.
+	if got := splitCSV(" a , , b "); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("splitCSV = %v", got)
+	}
+}
+
 func TestLoadOrDefault(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
