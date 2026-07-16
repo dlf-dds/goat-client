@@ -288,9 +288,20 @@ func New(cfg Config) (*Daemon, error) {
 		MatchDomains:  persisted.MeshDNSMatchDomains,
 	}
 	for _, s := range persisted.MeshDNSServers {
+		// `ip` or `ip:port` — mesh nameservers may serve on a non-53
+		// port (EFDI's coredns listens on :5353). All ported entries
+		// must agree: the host-DNS adapters carry one Port per apply.
+		if ap, err := netip.ParseAddrPort(s); err == nil {
+			if meshDNS.Port != 0 && meshDNS.Port != ap.Port() {
+				return nil, fmt.Errorf("config mesh_dns_servers: mixed ports (%d vs %d) are not supported", meshDNS.Port, ap.Port())
+			}
+			meshDNS.Port = ap.Port()
+			meshDNS.Nameservers = append(meshDNS.Nameservers, ap.Addr())
+			continue
+		}
 		a, err := netip.ParseAddr(s)
 		if err != nil {
-			return nil, fmt.Errorf("config mesh_dns_servers: %q is not an IP address: %w", s, err)
+			return nil, fmt.Errorf("config mesh_dns_servers: %q is not ip or ip:port: %w", s, err)
 		}
 		meshDNS.Nameservers = append(meshDNS.Nameservers, a)
 	}
@@ -373,11 +384,7 @@ func New(cfg Config) (*Daemon, error) {
 		// upstream even before (or without) a wg-cp0 connect. applyDNS
 		// re-feeds the merged values at every connect.
 		if len(meshDNS.Nameservers) > 0 {
-			ups := make([]string, 0, len(meshDNS.Nameservers))
-			for _, a := range meshDNS.Nameservers {
-				ups = append(ups, a.String())
-			}
-			svc.SetUpstreams(ups)
+			svc.SetUpstreams(upstreamStrings(meshDNS))
 		}
 		d.namesSvc = svc
 	}
@@ -400,6 +407,7 @@ func (d *Daemon) applyDNS(ctx context.Context, ifaceName string, cfg tunnel.Conf
 	// whichever fields the bundle left empty.
 	if len(direct.Nameservers) == 0 {
 		direct.Nameservers = d.meshDNS.Nameservers
+		direct.Port = d.meshDNS.Port
 	}
 	if len(direct.SearchDomains) == 0 {
 		direct.SearchDomains = d.meshDNS.SearchDomains
@@ -410,11 +418,7 @@ func (d *Daemon) applyDNS(ctx context.Context, ifaceName string, cfg tunnel.Conf
 	if d.namesSvc != nil {
 		// The forwarder's live tier forwards to the same resolvers the
 		// OS would use directly — including config-sourced ones.
-		ups := make([]string, 0, len(direct.Nameservers))
-		for _, a := range direct.Nameservers {
-			ups = append(ups, a.String())
-		}
-		d.namesSvc.SetUpstreams(ups)
+		d.namesSvc.SetUpstreams(upstreamStrings(direct))
 	}
 	d.mu.Lock()
 	d.lastDNS = &appliedDNS{iface: ifaceName, direct: direct}
@@ -445,6 +449,21 @@ func (d *Daemon) applyDNSCurrent(ctx context.Context, ifaceName string, direct t
 	if err := d.dnsAdapter.Apply(ctx, ifaceName, direct); err != nil {
 		d.logf("dns adapter apply failed (non-fatal): %v", err)
 	}
+}
+
+// upstreamStrings renders a host-DNS config's nameservers as the
+// host[:port] strings the names forwarder forwards to (port omitted →
+// the forwarder defaults to 53).
+func upstreamStrings(cfg tunneldns.Config) []string {
+	ups := make([]string, 0, len(cfg.Nameservers))
+	for _, a := range cfg.Nameservers {
+		if cfg.Port != 0 && cfg.Port != 53 {
+			ups = append(ups, net.JoinHostPort(a.String(), strconv.Itoa(int(cfg.Port))))
+		} else {
+			ups = append(ups, a.String())
+		}
+	}
+	return ups
 }
 
 // frontedDNSConfig derives the fronted variant of a direct host-DNS
