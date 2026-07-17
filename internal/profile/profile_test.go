@@ -551,3 +551,53 @@ func TestStoreMigrateLegacyBundleSkipsWhenAbsent(t *testing.T) {
 		t.Error("Migrate ran on a missing legacy file")
 	}
 }
+
+// TestStoreUpdateRosenpassRoundTrip: the per-profile Rosenpass override
+// persists through meta.json and reloads via Load; nil clears it back to
+// "follow the bundle."
+func TestStoreUpdateRosenpassRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	data := f.mintBundle(t, "dev-rp", "site-rp")
+	info, err := f.store.Add(AddProfileRequest{Name: "default", Mode: mode.NetbirdOnly, BundleBytes: data})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	slug := info.Slug
+
+	// Fresh profile carries no override.
+	p, err := f.store.Load(slug)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if p.RosenpassEnabled != nil || p.RosenpassPermissive != nil {
+		t.Fatalf("fresh profile has override: enabled=%v permissive=%v", p.RosenpassEnabled, p.RosenpassPermissive)
+	}
+
+	// Set an explicit on/strict override.
+	en, pm := true, false
+	if err := f.store.UpdateRosenpass(slug, &en, &pm); err != nil {
+		t.Fatalf("update rosenpass: %v", err)
+	}
+	p, err = f.store.Load(slug)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if p.RosenpassEnabled == nil || !*p.RosenpassEnabled {
+		t.Errorf("enabled override = %v, want true", p.RosenpassEnabled)
+	}
+	if p.RosenpassPermissive == nil || *p.RosenpassPermissive {
+		t.Errorf("permissive override = %v, want false", p.RosenpassPermissive)
+	}
+
+	// Clearing reverts to "follow the bundle."
+	if err := f.store.UpdateRosenpass(slug, nil, nil); err != nil {
+		t.Fatalf("clear rosenpass: %v", err)
+	}
+	p, err = f.store.Load(slug)
+	if err != nil {
+		t.Fatalf("reload after clear: %v", err)
+	}
+	if p.RosenpassEnabled != nil || p.RosenpassPermissive != nil {
+		t.Errorf("override not cleared: enabled=%v permissive=%v", p.RosenpassEnabled, p.RosenpassPermissive)
+	}
+}

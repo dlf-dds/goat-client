@@ -52,6 +52,10 @@ type fakeHandler struct {
 	setModeRecv     SetModeRequest
 	setModeReply    SetModeReply
 
+	setRosenpassCalls int
+	setRosenpassRecv  SetRosenpassRequest
+	setRosenpassReply SetRosenpassReply
+
 	// v0.2 inner-mesh-direct fields.
 	innerStatusReply      InnerMeshSnapshot
 	setInnerProfileCalls  int
@@ -107,6 +111,14 @@ func (f *fakeHandler) SetMode(ctx context.Context, req SetModeRequest) (SetModeR
 	f.setModeCalls++
 	f.setModeRecv = req
 	return f.setModeReply, nil
+}
+
+func (f *fakeHandler) SetRosenpass(ctx context.Context, req SetRosenpassRequest) (SetRosenpassReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setRosenpassCalls++
+	f.setRosenpassRecv = req
+	return f.setRosenpassReply, nil
 }
 
 func (f *fakeHandler) GetInnerMeshStatus(ctx context.Context) (InnerMeshSnapshot, error) {

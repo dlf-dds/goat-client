@@ -61,6 +61,12 @@ type Profile struct {
 	Bundle    *bundle.EnrollmentBundle
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// RosenpassEnabled / RosenpassPermissive are the per-profile live
+	// Rosenpass override loaded from meta.json (nil = follow the bundle
+	// default). The daemon overlays these onto the bundle-derived
+	// inner-mesh Config when it brings the mesh up.
+	RosenpassEnabled    *bool
+	RosenpassPermissive *bool
 }
 
 // Info is the lightweight summary the store hands back from List —
@@ -88,6 +94,13 @@ type meta struct {
 	Mode      mode.Mode `json:"mode"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// RosenpassEnabled / RosenpassPermissive are the per-profile live
+	// override of the bundle's mint-time Rosenpass policy, set by the
+	// setRosenpass IPC toggle. Pointer-typed so absent (nil) means
+	// "follow the bundle default" — a profile that was never toggled
+	// keeps whatever its bundle stamped, with no migration needed.
+	RosenpassEnabled    *bool `json:"rosenpass_enabled,omitempty"`
+	RosenpassPermissive *bool `json:"rosenpass_permissive,omitempty"`
 }
 
 // activeMarker is the on-disk shape of active.json.
@@ -294,11 +307,13 @@ func (s *Store) loadLocked(slug string) (*Profile, error) {
 		return nil, fmt.Errorf("parse bundle: %w", err)
 	}
 	return &Profile{
-		Name:      m.Name,
-		Mode:      m.Mode,
-		Bundle:    b,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		Name:                m.Name,
+		Mode:                m.Mode,
+		Bundle:              b,
+		CreatedAt:           m.CreatedAt,
+		UpdatedAt:           m.UpdatedAt,
+		RosenpassEnabled:    m.RosenpassEnabled,
+		RosenpassPermissive: m.RosenpassPermissive,
 	}, nil
 }
 
@@ -524,6 +539,25 @@ func (s *Store) UpdateMode(slug string, m mode.Mode) error {
 		return err
 	}
 	cur.Mode = m
+	cur.UpdatedAt = time.Now().UTC()
+	return s.writeMeta(slug, cur)
+}
+
+// UpdateRosenpass rewrites <slug>.meta.json with the per-profile
+// Rosenpass override, preserving every other field. enabled/permissive
+// are pointer-typed: a non-nil value sets an explicit override, nil
+// clears it (the profile reverts to following its bundle's mint-time
+// policy). Routed from the setRosenpass IPC live toggle. Does NOT touch
+// the bundle.
+func (s *Store) UpdateRosenpass(slug string, enabled, permissive *bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, err := s.readMeta(slug)
+	if err != nil {
+		return err
+	}
+	cur.RosenpassEnabled = enabled
+	cur.RosenpassPermissive = permissive
 	cur.UpdatedAt = time.Now().UTC()
 	return s.writeMeta(slug, cur)
 }
