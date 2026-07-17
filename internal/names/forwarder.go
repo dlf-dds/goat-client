@@ -210,6 +210,33 @@ func (f *Forwarder) handle(w dns.ResponseWriter, req *dns.Msg) {
 	}
 	now := time.Now()
 	snap, snapErr := f.store.LoadSnapshot()
+	// Verified self-claim first (ADR 1082 Amendment 2): signed by the
+	// name's own anchor, authorized by the snapshot's bindings — peer
+	// names only by construction. Demotes the observed tier wherever a
+	// valid claim answers.
+	if snapErr == nil {
+		if vc := f.store.LookupClaim(q.Name, snap, now); vc != nil {
+			wantV6 := q.Qtype == dns.TypeAAAA
+			if vc.IP.Is6() == wantV6 {
+				log.Printf("names forwarder: %s → %s via verified SELF-CLAIM, age %s (mesh DNS unreachable; signed by the name's own anchor)",
+					q.Name, vc.IP, AgeHuman(vc.Age))
+				f.served.Add(1)
+				f.lastFall.Store(now.Unix())
+				reply := new(dns.Msg)
+				reply.SetReply(req)
+				hdr := dns.RR_Header{Name: q.Name, Class: dns.ClassINET, Ttl: 30}
+				if wantV6 {
+					hdr.Rrtype = dns.TypeAAAA
+					reply.Answer = append(reply.Answer, &dns.AAAA{Hdr: hdr, AAAA: vc.IP.AsSlice()})
+				} else {
+					hdr.Rrtype = dns.TypeA
+					reply.Answer = append(reply.Answer, &dns.A{Hdr: hdr, A: vc.IP.AsSlice()})
+				}
+				_ = w.WriteMsg(reply)
+				return
+			}
+		}
+	}
 	obs := f.store.LookupObserved(q.Name, now)
 	ans, err := PickFallback(snap, snapErr, obs, q.Name, now)
 	if err != nil {
