@@ -71,12 +71,23 @@ type Snapshot struct {
 	TTLSeconds      uint64   `json:"ttl_seconds"`
 	CAID            string   `json:"ca_id"`
 	Records         []Record `json:"records"`
+	// PeerBindings is the registry-derived name→anchor ownership table
+	// for self-claim verification (ADR 1082 Amendment 2 §7.1). Absent on
+	// pre-Amendment-2 snapshots — no claims verifiable, fail closed.
+	PeerBindings []PeerBinding `json:"peer_bindings,omitempty"`
 }
 
 // Record is one canonical name→IP binding from the snapshot.
 type Record struct {
 	Name string `json:"name"`
 	IP   string `json:"ip"`
+}
+
+// PeerBinding says which anchor owns which peer name (see
+// Snapshot.PeerBindings).
+type PeerBinding struct {
+	Name   string `json:"name"`
+	Anchor string `json:"anchor"`
 }
 
 // ObservedRecord is one entry of the noncanonical observed tier: a

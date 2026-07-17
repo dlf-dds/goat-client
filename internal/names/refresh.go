@@ -61,6 +61,14 @@ func (st *Store) Refresh(ctx context.Context, client *http.Client, baseURL strin
 		log.Printf("names: cached snapshot serial %d (site %s, zone %s, %d records) from %s",
 			accepted.Serial, accepted.SiteID, accepted.Zone, len(accepted.Records), baseURL)
 	}
+	// Claims ride the same tier, best-effort and without serial semantics
+	// (each claim is individually leaf-signed, verified at read). Absent
+	// claims.json is the normal pre-Amendment-2 case.
+	if claims, cerr := fetch(ctx, client, strings.TrimSuffix(baseURL, "/")+"/"+ClaimsFile); cerr == nil {
+		if perr := st.PutClaims(claims); perr != nil {
+			log.Printf("names: fetched claims.json refused: %v", perr)
+		}
+	}
 	return accepted, nil
 }
 
