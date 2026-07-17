@@ -135,6 +135,14 @@ func (d *Dispatcher) handle(ctx context.Context, req *rpcRequest) rpcResponse {
 		}
 		out, err := d.h.SetMode(ctx, p)
 		fillResult(&resp, out, err)
+	case MethodSetRosenpass:
+		var p SetRosenpassRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcError{Code: errCodeInvalidParams, Message: err.Error()}
+			return resp
+		}
+		out, err := d.h.SetRosenpass(ctx, p)
+		fillResult(&resp, out, err)
 	case MethodGetInnerMeshStatus:
 		out, err := d.h.GetInnerMeshStatus(ctx)
 		fillResult(&resp, out, err)
@@ -222,6 +230,7 @@ func (d *Dispatcher) authorizedForMutate() bool {
 func isMutating(m Method) bool {
 	switch m {
 	case MethodImportBundle, MethodConnect, MethodDisconnect, MethodSetMode,
+		MethodSetRosenpass,
 		MethodSetInnerMeshProfile, MethodEnableInnerMesh, MethodDisableInnerMesh,
 		MethodAddProfile, MethodRemoveProfile, MethodRenameProfile, MethodSetActiveProfile,
 		MethodSendFile:

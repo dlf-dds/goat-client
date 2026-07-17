@@ -182,6 +182,12 @@ func (c *fakeClient) SetMode(_ context.Context, m string) (string, error) {
 	return prev, nil
 }
 
+func (c *fakeClient) SetRosenpass(_ context.Context, enabled, permissive bool) (ipc.SetRosenpassReply, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return ipc.SetRosenpassReply{Enabled: enabled, Permissive: permissive}, nil
+}
+
 func (c *fakeClient) ListProfiles(_ context.Context) ([]ipc.ProfileInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

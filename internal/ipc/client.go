@@ -167,12 +167,14 @@ func (c *realClient) GetStatus(ctx context.Context) (*StatusInfo, error) {
 	}
 	if reply.InnerMesh != nil {
 		out.InnerMesh = &InnerMeshInfo{
-			State:          mapWireState(reply.InnerMesh.State),
-			PeerCount:      reply.InnerMesh.PeerCount,
-			BytesIn:        reply.InnerMesh.BytesIn,
-			BytesOut:       reply.InnerMesh.BytesOut,
-			LastHandshake:  reply.InnerMesh.LastHandshake,
-			RosenpassPeers: reply.InnerMesh.RosenpassPeers,
+			State:               mapWireState(reply.InnerMesh.State),
+			PeerCount:           reply.InnerMesh.PeerCount,
+			BytesIn:             reply.InnerMesh.BytesIn,
+			BytesOut:            reply.InnerMesh.BytesOut,
+			LastHandshake:       reply.InnerMesh.LastHandshake,
+			RosenpassPeers:      reply.InnerMesh.RosenpassPeers,
+			RosenpassEnabled:    reply.InnerMesh.RosenpassEnabled,
+			RosenpassPermissive: reply.InnerMesh.RosenpassPermissive,
 		}
 	}
 	if reply.Names != nil {
@@ -230,6 +232,14 @@ func (c *realClient) SetMode(ctx context.Context, mode string) (string, error) {
 		return "", err
 	}
 	return reply.PreviousMode, nil
+}
+
+func (c *realClient) SetRosenpass(ctx context.Context, enabled, permissive bool) (SetRosenpassReply, error) {
+	var reply SetRosenpassReply
+	// A live toggle tears the inner mesh down and brings it back up; give
+	// the daemon the same generous budget as a mode switch.
+	err := c.rpc.call(MethodSetRosenpass, SetRosenpassRequest{Enabled: enabled, Permissive: permissive}, &reply, 60*time.Second)
+	return reply, err
 }
 
 func (c *realClient) GetDiagnostics(ctx context.Context) (*Diagnostics, error) {

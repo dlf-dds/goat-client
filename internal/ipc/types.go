@@ -55,6 +55,11 @@ type InnerMeshInfo struct {
 	// RosenpassPeers is how many links have Rosenpass (post-quantum) key
 	// exchange active. 0 = no PQC on any peer link.
 	RosenpassPeers int `json:"rosenpass_peers"`
+	// RosenpassEnabled / RosenpassPermissive are the configured PQC
+	// *intent* for this profile's inner mesh (override else bundle
+	// policy) — distinct from RosenpassPeers, the live active count.
+	RosenpassEnabled    bool `json:"rosenpass_enabled"`
+	RosenpassPermissive bool `json:"rosenpass_permissive"`
 }
 
 // BundleInfo summarises an imported bundle for display in the GUI.
@@ -113,6 +118,14 @@ type Client interface {
 	// dialog until GetStatus reports the new active state. Returns the
 	// previous mode for diff / rollback purposes.
 	SetMode(ctx context.Context, mode string) (previous string, err error)
+
+	// SetRosenpass live-toggles Rosenpass (post-quantum) key exchange on
+	// the inner mesh: it overrides the active profile's bundle policy,
+	// persists the override, and reconnects the inner mesh when it's up.
+	// permissive should be true when enabling during a mixed-fleet
+	// rollout so a peer never strands itself against not-yet-enabled
+	// peers. Returns the effective intent after the toggle.
+	SetRosenpass(ctx context.Context, enabled, permissive bool) (SetRosenpassReply, error)
 
 	// ListProfiles returns every profile in the daemon's store + their
 	// summary fields. The tray submenu calls this every poll tick;

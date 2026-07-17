@@ -181,6 +181,27 @@ func (c *stubClient) SetMode(ctx context.Context, mode string) (string, error) {
 	return previous, nil
 }
 
+func (c *stubClient) SetRosenpass(ctx context.Context, enabled, permissive bool) (SetRosenpassReply, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var prevEnabled, prevPermissive bool
+	if c.status.InnerMesh != nil {
+		prevEnabled = c.status.InnerMesh.RosenpassEnabled
+		prevPermissive = c.status.InnerMesh.RosenpassPermissive
+	} else {
+		c.status.InnerMesh = &InnerMeshInfo{State: StateDisconnected}
+	}
+	c.status.InnerMesh.RosenpassEnabled = enabled
+	c.status.InnerMesh.RosenpassPermissive = permissive
+	c.appendLogLocked(fmt.Sprintf("setRosenpass: enabled=%t permissive=%t (stub)", enabled, permissive))
+	return SetRosenpassReply{
+		PreviousEnabled:    prevEnabled,
+		PreviousPermissive: prevPermissive,
+		Enabled:            enabled,
+		Permissive:         permissive,
+	}, nil
+}
+
 func (c *stubClient) GetDiagnostics(ctx context.Context) (*Diagnostics, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

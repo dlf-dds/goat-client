@@ -64,6 +64,7 @@ import (
 var knownSubcommands = map[string]bool{
 	"getmode":    true,
 	"setmode":    true,
+	"pqc":        true,
 	"connect":    true,
 	"disconnect": true,
 	"status":     true,
@@ -116,6 +117,8 @@ func dispatchSubcommand(name string, args []string, defaultDaemonAddr string) in
 		return runGetMode(args, defaultDaemonAddr)
 	case "setmode":
 		return runSetMode(args, defaultDaemonAddr)
+	case "pqc":
+		return runPqc(args, defaultDaemonAddr)
 	case "connect":
 		return runConnect(args, defaultDaemonAddr)
 	case "disconnect":
@@ -142,6 +145,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  goat-client --window              launch the main window (child of systray)")
 	fmt.Fprintln(w, "  goat-client getmode               print the daemon's active v0.2 mode")
 	fmt.Fprintln(w, "  goat-client setmode <mode>        switch the daemon to <mode>")
+	fmt.Fprintln(w, "  goat-client pqc <on|off> [--strict]  toggle Rosenpass PQC on the inner mesh")
 	fmt.Fprintln(w, "  goat-client connect               bring the active mode's subsystems up")
 	fmt.Fprintln(w, "  goat-client disconnect            tear the active mode's subsystems down")
 	fmt.Fprintln(w, "  goat-client status                print the current status snapshot")
@@ -206,6 +210,50 @@ func runSetMode(args []string, defaultDaemonAddr string) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "mode: %s → %s\n", prev, m)
+	return 0
+}
+
+// runPqc live-toggles Rosenpass (post-quantum) key exchange on the inner
+// mesh via the daemon's setRosenpass RPC. `on` enables it permissively by
+// default (a peer keeps connectivity to not-yet-enabled peers during
+// rollout); `--strict` drops permissive so the peer requires Rosenpass.
+// `off` disables it.
+func runPqc(args []string, defaultDaemonAddr string) int {
+	fs := flag.NewFlagSet("pqc", flag.ContinueOnError)
+	daemonAddr := fs.String("daemon-addr", defaultDaemonAddr, "goat-clientd IPC address")
+	strict := fs.Bool("strict", false, "when enabling, require Rosenpass (drop permissive) — only for a fully-enabled fleet")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: goat-client pqc <on|off> [--strict]")
+		return 2
+	}
+	var enabled, permissive bool
+	switch fs.Arg(0) {
+	case "on":
+		enabled, permissive = true, !*strict
+	case "off":
+		enabled, permissive = false, false
+	default:
+		fmt.Fprintf(os.Stderr, "pqc: unknown state %q (want on|off)\n", fs.Arg(0))
+		return 2
+	}
+	client, err := ipc.NewClient(*daemonAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pqc: dial daemon: %v\n", err)
+		return 1
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	reply, err := client.SetRosenpass(ctx, enabled, permissive)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pqc: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stdout, "pqc (rosenpass): enabled %t → %t, permissive %t → %t\n",
+		reply.PreviousEnabled, reply.Enabled, reply.PreviousPermissive, reply.Permissive)
 	return 0
 }
 
@@ -294,8 +342,19 @@ func runStatus(args []string, defaultDaemonAddr string) int {
 		if st.InnerMesh.RosenpassPeers > 0 {
 			pqc = "active"
 		}
-		fmt.Fprintf(os.Stdout, "pqc (rosenpass): %s (%d/%d peers)\n",
-			pqc, st.InnerMesh.RosenpassPeers, st.InnerMesh.PeerCount)
+		intent := "off"
+		if st.InnerMesh.RosenpassEnabled {
+			if st.InnerMesh.RosenpassPermissive {
+				intent = "on (permissive)"
+			} else {
+				intent = "on (strict)"
+			}
+		}
+		// Intent (configured) is reported separately from the live active
+		// count: intent=on with 0/N peers means "enabled, but no peer has
+		// negotiated PQC yet" — honest, not a contradiction.
+		fmt.Fprintf(os.Stdout, "pqc (rosenpass): intent=%s, %s (%d/%d peers)\n",
+			intent, pqc, st.InnerMesh.RosenpassPeers, st.InnerMesh.PeerCount)
 	}
 	if st.Names != nil {
 		n := st.Names

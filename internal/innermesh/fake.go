@@ -56,6 +56,15 @@ func (f *Fake) Configure(cfg Config) error {
 	return nil
 }
 
+// LastConfig returns the most recent Config passed to Configure — test
+// hook for asserting what the daemon derived (e.g. the Rosenpass
+// override overlay).
+func (f *Fake) LastConfig() Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg
+}
+
 func (f *Fake) Connect(ctx context.Context) error {
 	f.mu.Lock()
 	if f.closed {

@@ -46,6 +46,13 @@ const (
 	MethodGetMode        Method = "getMode"
 	MethodSetMode        Method = "setMode"
 
+	// setRosenpass is the live toggle for Rosenpass (post-quantum) key
+	// exchange on the inner mesh. It overrides the bundle's mint-time
+	// policy for the active profile, persists the override per-profile,
+	// and reconnects the inner mesh (the embed-API equivalent of the
+	// netbird down→up dance a config change needs). Mutating.
+	MethodSetRosenpass Method = "setRosenpass"
+
 	// v0.2 inner-mesh-direct methods per Block 76N deliverable #5.
 	// getStatus already embeds an inner-mesh snapshot; these methods
 	// expose narrower entry points the GUI uses without the full
@@ -173,6 +180,16 @@ type InnerMeshSnapshot struct {
 	// RosenpassPeers is how many of PeerCount links have Rosenpass
 	// (post-quantum) key exchange active. 0 = no PQC on any peer link.
 	RosenpassPeers int `json:"rosenpassPeers"`
+	// RosenpassEnabled is the configured *intent* for this profile's inner
+	// mesh (the override set via setRosenpass, else the bundle's mint-time
+	// policy) — distinct from RosenpassPeers, which is the live active
+	// count. Enabled with RosenpassPeers==0 means "on, but no peer has
+	// negotiated PQC yet"; the two together are the honest PQC picture.
+	RosenpassEnabled bool `json:"rosenpassEnabled"`
+	// RosenpassPermissive is the companion intent: when true a
+	// Rosenpass-enabled link still accepts plain WireGuard from peers
+	// without Rosenpass. Meaningful only when RosenpassEnabled.
+	RosenpassPermissive bool `json:"rosenpassPermissive"`
 }
 
 // PeerConnectivity is one inner-mesh peer's line for the connectivity-check
@@ -262,6 +279,26 @@ type SetModeReply struct {
 	PreviousMode string `json:"previousMode"`
 	// Mode is the new active mode.
 	Mode string `json:"mode"`
+}
+
+// SetRosenpassRequest carries the live Rosenpass intent for the inner
+// mesh. Enabled turns the hybrid PQ key exchange on/off; Permissive
+// (meaningful only when Enabled) lets the peer still accept plain
+// WireGuard from peers without Rosenpass during a mixed-fleet rollout —
+// callers enabling PQC should set Permissive=true so a peer never
+// strands itself against not-yet-enabled peers.
+type SetRosenpassRequest struct {
+	Enabled    bool `json:"enabled"`
+	Permissive bool `json:"permissive"`
+}
+
+// SetRosenpassReply reports the effective intent before and after the
+// toggle so a caller can log a clean diff.
+type SetRosenpassReply struct {
+	PreviousEnabled    bool `json:"previousEnabled"`
+	PreviousPermissive bool `json:"previousPermissive"`
+	Enabled            bool `json:"enabled"`
+	Permissive         bool `json:"permissive"`
 }
 
 // SetInnerMeshProfileRequest carries the inner-mesh Config fields the
@@ -420,6 +457,9 @@ type Handler interface {
 	GetDiagnostics(ctx context.Context) (DiagnosticsReply, error)
 	GetMode(ctx context.Context) (GetModeReply, error)
 	SetMode(ctx context.Context, req SetModeRequest) (SetModeReply, error)
+
+	// SetRosenpass live-toggles Rosenpass PQC on the inner mesh. Mutating.
+	SetRosenpass(ctx context.Context, req SetRosenpassRequest) (SetRosenpassReply, error)
 
 	// v0.2 inner-mesh-direct methods.
 	GetInnerMeshStatus(ctx context.Context) (InnerMeshSnapshot, error)

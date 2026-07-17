@@ -159,6 +159,11 @@ type Daemon struct {
 
 	mu          sync.RWMutex
 	currentMode mode.Mode
+	// rosenpassOverride, when non-nil, overrides the active profile's
+	// bundle-stamped Rosenpass policy — set by the setRosenpass live
+	// toggle, persisted per-profile in meta.json, reloaded on
+	// adopt/setActive. Nil = follow the bundle default. Guarded by mu.
+	rosenpassOverride *rosenpassIntent
 	// namesSvc is the device-wide name-fallback subsystem (ADR 1082):
 	// local DNS forwarder + shared signed-snapshot store + observed
 	// tier. Nil when construction failed (never fatal to the daemon).
@@ -590,6 +595,7 @@ func (d *Daemon) adoptProfile(slug string, p *profile.Profile) {
 	if p.Mode.Valid() {
 		d.currentMode = p.Mode
 	}
+	d.rosenpassOverride = overrideFromProfile(p)
 	d.mu.Unlock()
 	if err := p.Bundle.CheckExpiry(time.Now()); err != nil {
 		d.logf("profile %q bundle expired: %v", slug, err)
@@ -892,6 +898,11 @@ func (d *Daemon) GetStatus(ctx context.Context) (ipc.StatusReply, error) {
 			snap.LastHandshake = st.LastHandshake
 			snap.RosenpassPeers = st.RosenpassPeers
 		}
+		// Effective Rosenpass intent (override else bundle default) —
+		// distinct from the active-peer count above.
+		cfg := d.meshConfig(b)
+		snap.RosenpassEnabled = cfg.RosenpassEnabled
+		snap.RosenpassPermissive = cfg.RosenpassPermissive
 		reply.InnerMesh = snap
 	}
 	if d.namesSvc != nil {
@@ -996,7 +1007,7 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 		mesh := d.mesh
 		d.mu.RUnlock()
 		if mesh != nil && b != nil {
-			if err := mesh.Configure(meshConfigFromBundle(b)); err != nil {
+			if err := mesh.Configure(d.meshConfig(b)); err != nil {
 				d.logf("setMode mesh configure: %v", err)
 			}
 			if err := mesh.Connect(ctx); err != nil {
@@ -1030,6 +1041,69 @@ func (d *Daemon) SetMode(ctx context.Context, req ipc.SetModeRequest) (ipc.SetMo
 	return ipc.SetModeReply{PreviousMode: prev.String(), Mode: newMode.String()}, nil
 }
 
+// SetRosenpass is the live toggle for Rosenpass (post-quantum) key
+// exchange on the inner mesh. It overrides the active profile's
+// bundle-stamped policy, persists the override per-profile, and — when
+// the inner mesh is currently up — reconnects it so the embed client
+// rebuilds with the new Rosenpass options (Configure alone does not
+// affect a running client; the embed API needs the down→up dance a
+// `netbird` config change needs). When the mesh is down, the stored
+// override is applied on the next Connect via d.meshConfig, so no
+// bring-up is forced here.
+func (d *Daemon) SetRosenpass(ctx context.Context, req ipc.SetRosenpassRequest) (ipc.SetRosenpassReply, error) {
+	d.mu.Lock()
+	prev := d.rosenpassOverride
+	b := d.currentBundle
+	slug := d.currentSlug
+	m := d.currentMode
+	mesh := d.mesh
+	d.rosenpassOverride = &rosenpassIntent{Enabled: req.Enabled, Permissive: req.Permissive}
+	d.mu.Unlock()
+
+	// Resolve the previous effective intent (override if one was set,
+	// else the bundle's mint-time policy) for a clean diff in the reply.
+	prevEnabled, prevPermissive := false, false
+	if prev != nil {
+		prevEnabled, prevPermissive = prev.Enabled, prev.Permissive
+	} else if b != nil {
+		bc := meshConfigFromBundle(b)
+		prevEnabled, prevPermissive = bc.RosenpassEnabled, bc.RosenpassPermissive
+	}
+
+	d.logf("setRosenpass: enabled=%t→%t permissive=%t→%t",
+		prevEnabled, req.Enabled, prevPermissive, req.Permissive)
+
+	// Live-reconcile only when the inner mesh is actually up; the down→up
+	// dance rebuilds the embed client with the new options.
+	if m.IncludesNetbird() && mesh != nil && b != nil && mesh.State() == innermesh.StateUp {
+		if err := mesh.Disconnect(ctx); err != nil {
+			d.logf("setRosenpass mesh down: %v", err)
+		}
+		if err := mesh.Configure(d.meshConfig(b)); err != nil {
+			d.logf("setRosenpass mesh configure: %v", err)
+		}
+		if err := mesh.Connect(ctx); err != nil {
+			d.logf("setRosenpass mesh up: %v", err)
+		}
+	}
+
+	// Persist the override on the active profile's meta.json.
+	if slug != "" {
+		en, pm := req.Enabled, req.Permissive
+		if err := d.store.UpdateRosenpass(slug, &en, &pm); err != nil {
+			d.logf("setRosenpass persist (profile %q): %v", slug, err)
+		}
+	}
+
+	d.logf("setRosenpass complete: enabled=%t permissive=%t", req.Enabled, req.Permissive)
+	return ipc.SetRosenpassReply{
+		PreviousEnabled:    prevEnabled,
+		PreviousPermissive: prevPermissive,
+		Enabled:            req.Enabled,
+		Permissive:         req.Permissive,
+	}, nil
+}
+
 // GetInnerMeshStatus returns the inner-mesh snapshot directly (a
 // narrower payload than GetStatus's embedded InnerMesh field). In
 // modes that don't include the inner mesh, returns a zero snapshot
@@ -1039,6 +1113,7 @@ func (d *Daemon) GetInnerMeshStatus(_ context.Context) (ipc.InnerMeshSnapshot, e
 	d.mu.RLock()
 	mesh := d.mesh
 	m := d.currentMode
+	b := d.currentBundle
 	d.mu.RUnlock()
 	if mesh == nil || !m.IncludesNetbird() {
 		return ipc.InnerMeshSnapshot{State: ipc.WireStateDisconnected}, nil
@@ -1051,6 +1126,9 @@ func (d *Daemon) GetInnerMeshStatus(_ context.Context) (ipc.InnerMeshSnapshot, e
 		snap.LastHandshake = st.LastHandshake
 		snap.RosenpassPeers = st.RosenpassPeers
 	}
+	cfg := d.meshConfig(b)
+	snap.RosenpassEnabled = cfg.RosenpassEnabled
+	snap.RosenpassPermissive = cfg.RosenpassPermissive
 	return snap, nil
 }
 
@@ -1243,7 +1321,7 @@ func (d *Daemon) Connect(ctx context.Context) error {
 			d.mesh = mesh
 			d.mu.Unlock()
 		}
-		if err := mesh.Configure(meshConfigFromBundle(b)); err != nil {
+		if err := mesh.Configure(d.meshConfig(b)); err != nil {
 			d.logf("mesh configure: %v", err)
 		}
 		if err := mesh.Connect(ctx); err != nil {
@@ -1307,6 +1385,47 @@ func meshConfigFromBundle(b *bundle.EnrollmentBundle) innermesh.Config {
 		// Nil bundle would be a programmer error — also return zero
 		// rather than panic, matching the pre-FromBundle behaviour.
 		return innermesh.Config{}
+	}
+	return cfg
+}
+
+// rosenpassIntent is the live Rosenpass override the setRosenpass toggle
+// holds on the daemon and persists per-profile.
+type rosenpassIntent struct {
+	Enabled    bool
+	Permissive bool
+}
+
+// overrideFromProfile lifts a profile's persisted Rosenpass override
+// (meta.json) into the daemon-held intent. Returns nil when the profile
+// carries no override (the common case) so the mesh follows the bundle's
+// mint-time policy. Enabled and Permissive are written together by
+// Store.UpdateRosenpass, but Permissive is deref-guarded defensively.
+func overrideFromProfile(p *profile.Profile) *rosenpassIntent {
+	if p == nil || p.RosenpassEnabled == nil {
+		return nil
+	}
+	perm := false
+	if p.RosenpassPermissive != nil {
+		perm = *p.RosenpassPermissive
+	}
+	return &rosenpassIntent{Enabled: *p.RosenpassEnabled, Permissive: perm}
+}
+
+// meshConfig derives the inner-mesh Config for a bundle, overlaying the
+// active profile's live Rosenpass override (setRosenpass) when one is
+// set. Every mesh bring-up path goes through here so a toggled intent
+// takes effect on the next Configure — without it, the mesh would revert
+// to the bundle's mint-time policy on any reconnect. Safe to call
+// without holding d.mu.
+func (d *Daemon) meshConfig(b *bundle.EnrollmentBundle) innermesh.Config {
+	cfg := meshConfigFromBundle(b)
+	d.mu.RLock()
+	ov := d.rosenpassOverride
+	d.mu.RUnlock()
+	if ov != nil {
+		cfg.RosenpassEnabled = ov.Enabled
+		cfg.RosenpassPermissive = ov.Permissive
 	}
 	return cfg
 }
@@ -1526,6 +1645,7 @@ func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, erro
 	d.currentBundle = target.Bundle
 	d.currentMode = newMode
 	d.currentSlug = slug
+	d.rosenpassOverride = overrideFromProfile(target)
 	// Recreate the mesh if we're entering inner-mesh territory and
 	// the previous mode didn't carry one (or vice versa). Mirrors
 	// SetMode's reconcile path.
@@ -1557,7 +1677,7 @@ func (d *Daemon) setActiveLocked(ctx context.Context, slug string) (string, erro
 		d.logf("setActiveProfile derive tunnel: %v", err)
 	}
 	if newMode.IncludesNetbird() && mesh != nil {
-		if err := mesh.Configure(meshConfigFromBundle(target.Bundle)); err != nil {
+		if err := mesh.Configure(d.meshConfig(target.Bundle)); err != nil {
 			d.logf("setActiveProfile mesh configure: %v", err)
 		}
 		if err := mesh.Connect(ctx); err != nil {
