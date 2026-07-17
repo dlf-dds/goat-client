@@ -160,7 +160,7 @@ require (
 	gvisor.dev/gvisor v0.0.0-20260219192049-0f2374377e89 // indirect
 )
 
-replace github.com/netbirdio/netbird => github.com/dfarrel1/netbird v0.0.0-20260715211302-8e30fabfec40
+replace github.com/netbirdio/netbird => github.com/dfarrel1/netbird v0.0.0-20260717153144-6fb9b15c062d
 
 replace github.com/kardianos/service => github.com/netbirdio/service v0.0.0-20240911161631-f62744f42502
 

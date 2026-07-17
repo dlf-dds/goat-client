@@ -49,10 +49,12 @@ func FromBundle(b *bundle.EnrollmentBundle) (Config, error) {
 		return Config{}, ErrBundleMissingInnerMeshSetup
 	}
 	c := Config{
-		ManagementURL:    b.InnerMeshSetup.ManagementURL,
-		SetupKey:         b.InnerMeshSetup.SetupKey,
-		AdminAccessToken: b.InnerMeshSetup.AdminAccessToken,
-		BundleDeviceID:   b.DeviceID,
+		ManagementURL:       b.InnerMeshSetup.ManagementURL,
+		SetupKey:            b.InnerMeshSetup.SetupKey,
+		AdminAccessToken:    b.InnerMeshSetup.AdminAccessToken,
+		BundleDeviceID:      b.DeviceID,
+		RosenpassEnabled:    b.InnerMeshSetup.RosenpassEnabled,
+		RosenpassPermissive: b.InnerMeshSetup.RosenpassPermissive,
 	}
 	if len(b.InnerMeshSetup.PreSharedKey) > 0 {
 		c.PreSharedKey = append([]byte(nil), b.InnerMeshSetup.PreSharedKey...)

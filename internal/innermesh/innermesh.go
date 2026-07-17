@@ -87,6 +87,18 @@ type Config struct {
 	// empty means "no PSK." Defense-in-depth, not load-bearing.
 	PreSharedKey []byte
 
+	// RosenpassEnabled turns on the Rosenpass hybrid post-quantum key
+	// exchange on the inner mesh (embed parity with `--enable-rosenpass`).
+	// Delivered as per-goatnet policy via the enrollment bundle, so a
+	// goat-client device gets PQC the same way standalone-netbird peers
+	// do at `netbird up`. See rosenpass-intra-mesh-pqc.md.
+	RosenpassEnabled bool
+
+	// RosenpassPermissive lets a Rosenpass-enabled inner-mesh peer still
+	// accept plain WireGuard from not-yet-enabled peers (mixed-fleet
+	// rollout). Only meaningful when RosenpassEnabled is true.
+	RosenpassPermissive bool
+
 	// BundleDeviceID is the operator-assigned device label from the
 	// EnrollmentBundle (b.DeviceID). FromBundle populates this; the
 	// Mesh implementation composes it with the device-reported deviceID

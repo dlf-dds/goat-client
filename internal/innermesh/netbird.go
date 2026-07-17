@@ -118,7 +118,12 @@ func (n *Netbird) Connect(ctx context.Context) error {
 		SetupKey:      cfg.SetupKey,
 		ManagementURL: cfg.ManagementURL,
 		PreSharedKey:  psk,
-		LogOutput:     n.logBuf,
+		// Rosenpass PQC on the inner mesh — the goat-client analogue of the
+		// `--enable-rosenpass` enrollment flag; sourced from the bundle policy
+		// via cfg. Needs embed.Options rosenpass support (dfarrel1/netbird#6).
+		RosenpassEnabled:    cfg.RosenpassEnabled,
+		RosenpassPermissive: cfg.RosenpassPermissive,
+		LogOutput:           n.logBuf,
 		// NoUserspace stays false: the 76N brief mandates userspace
 		// WireGuard. netbird's embed default already matches.
 	})
