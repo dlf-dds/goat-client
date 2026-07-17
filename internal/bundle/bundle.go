@@ -161,6 +161,17 @@ type InnerMeshSetup struct {
 	// PreSharedKey is the optional WireGuard PSK passed through to
 	// the inner-mesh userspace device. 32 bytes when set.
 	PreSharedKey []byte `cbor:"pre_shared_key,omitempty"`
+
+	// RosenpassEnabled is the per-goatnet PQC policy, stamped at mint
+	// time from the `rosenpass_enabled` group_var. When true the daemon
+	// turns on Rosenpass on the inner mesh — the goat-client analogue of
+	// the `--enable-rosenpass` enrollment flag standalone-netbird peers get
+	// at `netbird up`. See rosenpass-intra-mesh-pqc.md.
+	RosenpassEnabled bool `cbor:"rosenpass_enabled,omitempty"`
+
+	// RosenpassPermissive keeps connectivity to not-yet-enabled peers
+	// during rollout. Only meaningful when RosenpassEnabled is true.
+	RosenpassPermissive bool `cbor:"rosenpass_permissive,omitempty"`
 }
 
 // HasInnerMesh reports whether the bundle carries enough information
