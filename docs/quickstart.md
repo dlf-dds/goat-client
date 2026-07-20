@@ -30,6 +30,8 @@ The bundle is single-use-by-policy but technically reusable until `not-after`; r
 
 ## 2. End-user installs goat-client
 
+> **Before you install:** if this host already runs the standalone `netbird` client, do **not** run both at once. goat-client's `netbird-only` / `combined` modes embed their own NetBird and will collide with the standalone client. Stop one before using the other — see [troubleshooting.md](troubleshooting.md#do-not-run-goat-client-and-standalone-netbird-at-the-same-time). (`wg-cp0-only` mode is the one exception — it has no inner mesh.)
+
 Pick the package from the [v0.3.2 release page](https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.2). The full install + cosign-verify recipes live in the [README](../README.md#install). Short form:
 
 ```bash
