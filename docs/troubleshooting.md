@@ -2,6 +2,25 @@
 
 Symptoms-first guide for the things that break between install and "tunnel up". If your problem isn't here, file an issue with `goat-clientd --version` output and the relevant log excerpt.
 
+## Do NOT run goat-client and standalone NetBird at the same time
+
+**This is the single most common way to get confusing, nondeterministic behaviour — read it before you install.**
+
+goat-client in **`netbird-only`** or **`combined`** mode *is* a NetBird client: it runs its own NetBird instance **embedded** inside `goat-clientd` (the "inner mesh"). If the standalone `netbird` client is also running on the same host, you have **two NetBird stacks competing for the same overlay**, which is not supported:
+
+- Both install routes for the same `100.x` mesh range and both bring up a tunnel interface, so overlay traffic goes to whichever interface wins — connectivity flaps or blackholes unpredictably.
+- If both enroll the same identity, the management server sees the peer register and re-register, churning its state.
+- State you read from one stack does not reflect the other — the goat-client GUI / `goat-client status` reads **only** goat-clientd's embedded mesh, and `netbird status` reads **only** the standalone client. Reading PQC/handshake state from the wrong one is a classic red herring.
+
+**Rule: exactly one NetBird overlay per host.** Choose one:
+
+- **Use goat-client for the mesh** — stop the standalone client first (`netbird down`, or stop its service), *then* bring goat-client up in `netbird-only` / `combined`. Revert by stopping goat-client and running `netbird up`.
+- **Use standalone NetBird for the mesh** — keep goat-client in **`wg-cp0-only`** mode (it carries **no** inner mesh, so it never touches the NetBird overlay) or stop `goat-clientd` entirely.
+
+`wg-cp0-only` is the **only** goat-client mode that safely coexists with a standalone NetBird client. `netbird-only` and `combined` both embed NetBird and both collide.
+
+**Collision symptoms:** mesh peers flapping connected/disconnected, a duplicate entry for your device in the NetBird management UI, routes to `100.x` addresses changing under you, or PQC / handshake readings that disagree between `netbird status` and `goat-client status`. The fix is always the same: stop one of the two stacks.
+
 ## Daemon won't start
 
 The packagers register `goat-clientd` as a system service and it should auto-start at install + at boot. If `systemctl is-active goat-clientd` (or the platform equivalent) reports `failed`, `inactive`, or `unknown`:
