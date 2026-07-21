@@ -4,14 +4,21 @@ Documentation=https://github.com/dlf-dds/goat-client
 After=network-online.target
 Wants=network-online.target
 
+# Type=simple — the Go daemon does not call sd_notify(3) (it would need
+# a libsystemd binding we have not vendored). Type=notify made systemd
+# wait for a READY=1 that never arrives, then kill the unit. simple is
+# the match for "daemon stays in the foreground; ready as soon as up."
 [Service]
-Type=notify
-NotifyAccess=main
+Type=simple
 EnvironmentFile=-/etc/default/goat-client
+# goat-clientd registers -bundle / -socket / -trust-roots / -config; it
+# has NO -bundle-dir / -ipc-socket / -log-file. Go's flag package exits 2
+# on the first unknown flag, which crash-looped this unit. Logs go to
+# stdout/stderr, captured by the journal (see LogsDirectory below).
 ExecStart=/usr/bin/goat-clientd \
-    --bundle-dir=/var/lib/goat-client \
-    --ipc-socket=/run/goat-client/ipc.sock \
-    --log-file=/var/log/goat-client/goat-clientd.log \
+    --bundle=/var/lib/goat-client/bundle.cbor \
+    --socket=/run/goat-client/ipc.sock \
+    --trust-roots=/etc/goat-client/trust-roots.pem \
     --config=/etc/goat-client/config.toml \
     $GOAT_CLIENTD_FLAGS
 Restart=on-failure
