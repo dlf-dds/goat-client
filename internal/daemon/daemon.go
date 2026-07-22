@@ -592,7 +592,12 @@ func (d *Daemon) adoptProfile(slug string, p *profile.Profile) {
 	d.mu.Lock()
 	d.currentBundle = p.Bundle
 	d.currentSlug = slug
-	if p.Mode.Valid() {
+	// The persisted profile carries a per-profile mode, but an explicit
+	// --mode flag (Config.InitialMode) outranks it: the install-time
+	// argument is the operator's stated intent and must win over a stale
+	// profile mode. An empty InitialMode means "use the persisted
+	// profile / config mode", so only adopt the profile's mode then.
+	if p.Mode.Valid() && d.cfg.InitialMode == "" {
 		d.currentMode = p.Mode
 	}
 	d.rosenpassOverride = overrideFromProfile(p)

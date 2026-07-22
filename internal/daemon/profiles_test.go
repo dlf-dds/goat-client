@@ -307,3 +307,56 @@ func TestRenameDoesNotClobberBundle(t *testing.T) {
 		t.Error("rename wiped currentBundle")
 	}
 }
+
+// TestExplicitModeFlagOverridesPersistedProfileMode — a persisted
+// active profile carries mode=combined, but the daemon is (re)started
+// with an explicit --mode=netbird-only (Config.InitialMode). The flag
+// must win over the profile's stored mode. Regression guard for the
+// EFDI v0.3.4 finding: `goat-clientd -mode=netbird-only` still reported
+// mode=combined and brought up the wg-cp0 outer leg.
+func TestExplicitModeFlagOverridesPersistedProfileMode(t *testing.T) {
+	tb := mintTestBundle(t, true, "")
+	d, dir := newProfilesDaemon(t, tb.roots, mode.Combined)
+	ctx := context.Background()
+	if _, err := d.AddProfile(ctx, ipc.AddProfileRequest{Name: "efdi", Mode: string(mode.Combined), BundleBytes: tb.bytes, SetActive: true}); err != nil {
+		t.Fatalf("AddProfile: %v", err)
+	}
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	// Restart with an explicit --mode=netbird-only override.
+	d2 := reopenDaemon(t, dir, tb.roots, mode.NetbirdOnly)
+	reply, err := d2.GetMode(context.Background())
+	if err != nil {
+		t.Fatalf("GetMode: %v", err)
+	}
+	if reply.Mode != string(mode.NetbirdOnly) {
+		t.Errorf("explicit --mode flag should win over persisted profile mode; got %q want %q", reply.Mode, mode.NetbirdOnly)
+	}
+}
+
+// TestEmptyModeFlagAdoptsPersistedProfileMode — the companion to the
+// override case: with no explicit --mode flag (empty InitialMode), the
+// daemon adopts the persisted active profile's mode on restart.
+func TestEmptyModeFlagAdoptsPersistedProfileMode(t *testing.T) {
+	tb := mintTestBundle(t, true, "")
+	d, dir := newProfilesDaemon(t, tb.roots, mode.Combined)
+	ctx := context.Background()
+	if _, err := d.AddProfile(ctx, ipc.AddProfileRequest{Name: "efdi", Mode: string(mode.NetbirdOnly), BundleBytes: tb.bytes, SetActive: true}); err != nil {
+		t.Fatalf("AddProfile: %v", err)
+	}
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	// Restart with no --mode override (empty InitialMode).
+	d2 := reopenDaemon(t, dir, tb.roots, mode.Mode(""))
+	reply, err := d2.GetMode(context.Background())
+	if err != nil {
+		t.Fatalf("GetMode: %v", err)
+	}
+	if reply.Mode != string(mode.NetbirdOnly) {
+		t.Errorf("empty --mode flag should adopt persisted profile mode; got %q want %q", reply.Mode, mode.NetbirdOnly)
+	}
+}
