@@ -42,6 +42,16 @@ contents:
     file_info:
       mode: 0644
 
+  # Offline-CA trust root (ECDSA P-256 public key PEM). goat-clientd is
+  # fatal at start if --trust-roots is absent, so every package must seed
+  # one. `type: config` lets an operator overwrite it with a production
+  # root and have that survive package upgrades.
+  - src: ./packaging/trust-roots/dev-desertbread-ca-ecdsa-2026-05-09.pem
+    dst: /etc/goat-client/trust-roots.pem
+    type: config
+    file_info:
+      mode: 0644
+
 scripts:
   preinstall: ./packaging/rpm-headless/scripts/preinstall.sh
   postinstall: ./packaging/rpm-headless/scripts/postinstall.sh

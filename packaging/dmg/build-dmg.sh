@@ -67,6 +67,15 @@ cp "${PKG_ROOT}/Applications/goat-client.app/Contents/Info.plist" /dev/null # sa
 cp "${PKG_DIR}/launchd/io.dlf-dds.goat-clientd.plist" \
    "${PKG_ROOT}/Library/LaunchDaemons/io.dlf-dds.goat-clientd.plist"
 
+# Offline-CA trust root. goat-clientd is fatal at start if --trust-roots
+# is absent; the plist points --trust-roots at this path. Ship the dev
+# ECDSA P-256 root; operators overwrite it with a production root.
+SUPPORT_DIR="${PKG_ROOT}/Library/Application Support/goat-client"
+mkdir -p "${SUPPORT_DIR}"
+cp "packaging/trust-roots/dev-desertbread-ca-ecdsa-2026-05-09.pem" \
+   "${SUPPORT_DIR}/trust-roots.pem"
+chmod 0644 "${SUPPORT_DIR}/trust-roots.pem"
+
 PKG_SCRIPTS="${STAGE_DIR}/pkg-scripts"
 mkdir -p "${PKG_SCRIPTS}"
 cp "${PKG_DIR}/scripts/preinstall" "${PKG_SCRIPTS}/preinstall"

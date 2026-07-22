@@ -18,10 +18,18 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/goat-clientd</string>
-        <string>--bundle-dir=/Library/Application Support/goat-client</string>
-        <string>--ipc-socket=/var/run/goat-client/ipc.sock</string>
-        <string>--log-file=/var/log/goat-client/goat-clientd.log</string>
+        <string>--bundle=/Library/Application Support/goat-client/bundle.cbor</string>
+        <string>--socket=/var/run/goat-client/ipc.sock</string>
+        <string>--trust-roots=/Library/Application Support/goat-client/trust-roots.pem</string>
     </array>
+
+    <!--
+        The daemon has no log-file flag; it logs to stdout/stderr, which
+        launchd captures via StandardOutPath / StandardErrorPath below.
+        (Earlier plists passed --bundle-dir / --ipc-socket / --log-file,
+        none of which goat-clientd registers — Go's flag package rejects
+        the first unknown flag and exits 2, crash-looping the daemon.)
+    -->
 
     <key>RunAtLoad</key>
     <true/>
