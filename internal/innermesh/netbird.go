@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -252,7 +253,25 @@ func (n *Netbird) LocalIP() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("innermesh/netbird: client.Status: %w", err)
 	}
-	return fs.LocalPeerState.IP, nil
+	// netbird's LocalPeerState.IP carries the overlay address WITH its
+	// CIDR mask (e.g. "100.64.254.108/16") — unlike per-peer IPs, which
+	// are bare. The Mesh contract (and every consumer: peerping +
+	// filedrop bind listeners to this value) expects a bare host IP, so
+	// strip any prefix length here at the source.
+	return bareOverlayIP(fs.LocalPeerState.IP), nil
+}
+
+// bareOverlayIP strips a CIDR prefix length from an overlay address,
+// returning the bare IP. A value that is already a bare IP (or any
+// string that is not a valid prefix) is returned unchanged.
+func bareOverlayIP(s string) string {
+	if s == "" {
+		return s
+	}
+	if pfx, err := netip.ParsePrefix(s); err == nil {
+		return pfx.Addr().String()
+	}
+	return s
 }
 
 // Logs returns the most recent tail log lines from the ring buffer
