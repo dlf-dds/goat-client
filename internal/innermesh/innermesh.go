@@ -99,6 +99,24 @@ type Config struct {
 	// rollout). Only meaningful when RosenpassEnabled is true.
 	RosenpassPermissive bool
 
+	// ConfigPath persists the embedded netbird client's config —
+	// including the WireGuard private key — across Connects. Empty
+	// means in-memory config, and an in-memory config generates a NEW
+	// WireGuard key on every Connect: every daemon restart, mode
+	// switch, and Rosenpass toggle then registers a brand-new peer
+	// with management, consumes a setup-key use, and lands on a
+	// different overlay IP. The daemon derives a per-profile path so
+	// one goat-client profile keeps one mesh identity.
+	ConfigPath string
+
+	// StatePath persists the embedded client's shutdown/cleanup state
+	// (DNS, routes, firewall restore data). When empty, stock
+	// netbird's profilemanager falls through to ITS OWN
+	// active_profile.txt-derived state file — silently sharing state
+	// with any co-installed stock netbird client (the concurrent-run
+	// hazard the docs warn about). Always set alongside ConfigPath.
+	StatePath string
+
 	// BundleDeviceID is the operator-assigned device label from the
 	// EnrollmentBundle (b.DeviceID). FromBundle populates this; the
 	// Mesh implementation composes it with the device-reported deviceID

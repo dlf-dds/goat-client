@@ -128,6 +128,24 @@ type Config struct {
 	// set. 0 means the default (a few seconds); tests set it low.
 	PeerConnReconcileInterval time.Duration
 
+	// InnerMeshConnectTimeout bounds a single inner-mesh Connect
+	// attempt. The embed's Start blocks indefinitely on an unreachable
+	// management plane (its docs direct callers to pass a deadline);
+	// without a bound, a daemon-side connect against a dead mgmt URL
+	// hangs as an orphaned in-flight operation after the CLI's own
+	// deadline fires. 0 means the default (2 minutes).
+	InnerMeshConnectTimeout time.Duration
+
+	// MeshSupervisorInterval is the mesh supervisor's poll cadence and
+	// base retry delay after a failed inner-mesh bring-up (exponential
+	// backoff to MeshSupervisorMax). 0 means the default (15s); tests
+	// set it low.
+	MeshSupervisorInterval time.Duration
+
+	// MeshSupervisorMax caps the supervisor's retry backoff. 0 means
+	// the default (2 minutes).
+	MeshSupervisorMax time.Duration
+
 	// FileDropInboxDir is where received files (goatdrop) land. Empty
 	// derives a sibling of BundlePath ("inbox").
 	FileDropInboxDir string
@@ -172,6 +190,12 @@ type Daemon struct {
 	currentSlug     string // active profile slug; "" when no profile loaded
 	manager         TunnelManager
 	mesh            innermesh.Mesh
+	// meshWanted is the operator's standing intent that the inner mesh
+	// be up. Set on any Connect/EnableInnerMesh attempt (even a failed
+	// one — that's what the supervisor retries), cleared on
+	// Disconnect/DisableInnerMesh/mode teardown. The mesh supervisor
+	// reconnects whenever wanted-but-down. Guarded by mu.
+	meshWanted bool
 	dnsAdapter      tunneldns.Adapter
 	startedAt       time.Time
 	lastConnect     time.Time
@@ -624,6 +648,7 @@ func (d *Daemon) ServeIPC(ctx context.Context) error {
 	server := ipc.NewServer(d, d.cfg.TrustedUid)
 	d.logf("ipc listening on %s", d.cfg.SocketPath)
 	go d.runPeerConn(ctx)
+	go d.runMeshSupervisor(ctx)
 	go d.runFileServer(ctx)
 	if d.namesSvc != nil {
 		listen := os.Getenv("GOAT_NAMES_LISTEN")
@@ -635,6 +660,75 @@ func (d *Daemon) ServeIPC(ctx context.Context) error {
 		}
 	}
 	return server.Serve(ctx, ln)
+}
+
+// runMeshSupervisor recovers the inner mesh when it is wanted but
+// down. Before this loop existed a failed INITIAL bring-up was
+// terminal: netbird's own ConnectClient self-heals a mid-session drop,
+// but a Connect that never succeeded (mgmt unreachable at boot, DNS
+// not yet up, transient auth failure) left the daemon parked in
+// StateError until a human sent another IPC connect — the
+// "worked-until-restart, then wedged" shape. Retries use exponential
+// backoff (MeshSupervisorInterval → MeshSupervisorMax) and reset once
+// the mesh holds StateUp. Blocks until ctx cancels; started by
+// ServeIPC.
+func (d *Daemon) runMeshSupervisor(ctx context.Context) {
+	base := d.cfg.MeshSupervisorInterval
+	if base <= 0 {
+		base = 15 * time.Second
+	}
+	maxDelay := d.cfg.MeshSupervisorMax
+	if maxDelay <= 0 {
+		maxDelay = 2 * time.Minute
+	}
+	delay := base
+	t := time.NewTimer(base)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		d.mu.RLock()
+		mesh := d.mesh
+		m := d.currentMode
+		wanted := d.meshWanted
+		b := d.currentBundle
+		d.mu.RUnlock()
+
+		if !wanted || !m.IncludesNetbird() || mesh == nil || b == nil {
+			delay = base
+			t.Reset(base)
+			continue
+		}
+		// Only intervene on a settled failure. StateUp needs no help;
+		// StateConfiguring means another actor is mid-transition —
+		// racing it would double-Connect.
+		if mesh.State() != innermesh.StateError {
+			if mesh.State() == innermesh.StateUp {
+				delay = base
+			}
+			t.Reset(base)
+			continue
+		}
+		d.logf("mesh supervisor: inner mesh wanted but down — reconnecting")
+		if err := mesh.Configure(d.meshConfig(b)); err != nil {
+			d.logf("mesh supervisor configure: %v", err)
+		}
+		if err := d.connectMesh(ctx, mesh); err != nil {
+			d.logf("mesh supervisor reconnect failed: %v (next attempt in %s)", err, delay)
+			t.Reset(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			continue
+		}
+		d.logf("mesh supervisor: inner mesh recovered")
+		delay = base
+		t.Reset(base)
+	}
 }
 
 // runPeerConn owns the peerping subsystem's lifecycle for the daemon's
@@ -1220,6 +1314,10 @@ func (d *Daemon) SetInnerMeshProfile(_ context.Context, req ipc.SetInnerMeshProf
 	if len(req.PreSharedKey) > 0 {
 		cfg.PreSharedKey = append([]byte(nil), req.PreSharedKey...)
 	}
+	d.mu.RLock()
+	slug := d.currentSlug
+	d.mu.RUnlock()
+	d.fillMeshPersistPaths(&cfg, slug)
 	return mesh.Configure(cfg)
 }
 
@@ -1238,16 +1336,33 @@ func (d *Daemon) EnableInnerMesh(ctx context.Context) error {
 	if mesh == nil {
 		return errors.New("enableInnerMesh: inner-mesh manager not constructed")
 	}
-	return mesh.Connect(ctx)
+	d.mu.Lock()
+	d.meshWanted = true
+	d.mu.Unlock()
+	return d.connectMesh(ctx, mesh)
+}
+
+// connectMesh runs mesh.Connect under the configured deadline. The
+// embed's Start blocks indefinitely against an unreachable management
+// plane; every daemon-side bring-up goes through this bound.
+func (d *Daemon) connectMesh(ctx context.Context, mesh innermesh.Mesh) error {
+	timeout := d.cfg.InnerMeshConnectTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return mesh.Connect(cctx)
 }
 
 // DisableInnerMesh brings the inner mesh down (Disconnect). Idempotent
 // — safe to call when the mesh isn't up, or when the active mode
 // doesn't include the inner mesh.
 func (d *Daemon) DisableInnerMesh(ctx context.Context) error {
-	d.mu.RLock()
+	d.mu.Lock()
 	mesh := d.mesh
-	d.mu.RUnlock()
+	d.meshWanted = false
+	d.mu.Unlock()
 	if mesh == nil {
 		return nil
 	}
@@ -1326,10 +1441,15 @@ func (d *Daemon) Connect(ctx context.Context) error {
 			d.mesh = mesh
 			d.mu.Unlock()
 		}
+		// Standing intent recorded before the attempt: a failed initial
+		// bring-up is exactly what the mesh supervisor exists to retry.
+		d.mu.Lock()
+		d.meshWanted = true
+		d.mu.Unlock()
 		if err := mesh.Configure(d.meshConfig(b)); err != nil {
 			d.logf("mesh configure: %v", err)
 		}
-		if err := mesh.Connect(ctx); err != nil {
+		if err := d.connectMesh(ctx, mesh); err != nil {
 			d.mu.Lock()
 			d.lastErr = err
 			d.mu.Unlock()
@@ -1363,6 +1483,9 @@ func (d *Daemon) Disconnect(ctx context.Context) error {
 		d.logf("wg-cp0 down")
 	}
 	if currentMode.IncludesNetbird() && mesh != nil {
+		d.mu.Lock()
+		d.meshWanted = false
+		d.mu.Unlock()
 		if err := mesh.Disconnect(ctx); err != nil {
 			return err
 		}
@@ -1427,12 +1550,34 @@ func (d *Daemon) meshConfig(b *bundle.EnrollmentBundle) innermesh.Config {
 	cfg := meshConfigFromBundle(b)
 	d.mu.RLock()
 	ov := d.rosenpassOverride
+	slug := d.currentSlug
 	d.mu.RUnlock()
 	if ov != nil {
 		cfg.RosenpassEnabled = ov.Enabled
 		cfg.RosenpassPermissive = ov.Permissive
 	}
+	d.fillMeshPersistPaths(&cfg, slug)
 	return cfg
+}
+
+// fillMeshPersistPaths sets the embedded netbird client's per-profile
+// persistence paths, beside the profile store. An in-memory config
+// (empty ConfigPath) mints a NEW WireGuard identity on every Connect —
+// a new mgmt-registered peer, a consumed setup-key use, and a
+// different overlay IP per daemon restart / mode switch / Rosenpass
+// toggle. StatePath is set explicitly so the embed never falls through
+// to a co-installed stock netbird's active_profile.txt-derived state
+// file.
+func (d *Daemon) fillMeshPersistPaths(cfg *innermesh.Config, slug string) {
+	if d.store == nil {
+		return
+	}
+	if slug == "" {
+		slug = "default"
+	}
+	imDir := filepath.Join(d.store.Dir(), slug+".innermesh")
+	cfg.ConfigPath = filepath.Join(imDir, "config.json")
+	cfg.StatePath = filepath.Join(imDir, "state.json")
 }
 
 // GetDiagnostics returns the rolling log buffer + bookkeeping.
@@ -1715,6 +1860,7 @@ func (d *Daemon) tearDownMode(ctx context.Context, m mode.Mode) error {
 		d.mu.Lock()
 		mesh := d.mesh
 		d.mesh = nil
+		d.meshWanted = false
 		d.mu.Unlock()
 		if mesh != nil {
 			if err := mesh.Disconnect(ctx); err != nil {
@@ -1740,6 +1886,7 @@ func (d *Daemon) tearDownAll(ctx context.Context) error {
 	d.mu.Lock()
 	mesh := d.mesh
 	d.mesh = nil
+	d.meshWanted = false
 	d.mu.Unlock()
 	if mesh != nil {
 		if err := mesh.Disconnect(ctx); err != nil {

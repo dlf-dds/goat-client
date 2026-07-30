@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -114,11 +116,29 @@ func (n *Netbird) Connect(ctx context.Context) error {
 	// feeds the {hostname} substitution in the SetupKey's
 	// AutoPeerNameTemplate (dfarrel1/netbird c33517a5).
 	deviceName := composeIdentity(cfg.BundleDeviceID, n.deviceID)
+	// Ensure the persistence dirs exist before the embed touches them —
+	// profilemanager writes the config (with the WireGuard private key)
+	// at ConfigPath and the cleanup state at StatePath. Without these
+	// paths the embed keeps everything in memory and mints a fresh WG
+	// identity per Connect (see Config.ConfigPath).
+	for _, p := range []string{cfg.ConfigPath, cfg.StatePath} {
+		if p == "" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			n.mu.Lock()
+			n.state = StateError
+			n.mu.Unlock()
+			return fmt.Errorf("innermesh/netbird: create dir for %s: %w", p, err)
+		}
+	}
 	client, err := netbird.New(netbird.Options{
 		DeviceName:    deviceName,
 		SetupKey:      cfg.SetupKey,
 		ManagementURL: cfg.ManagementURL,
 		PreSharedKey:  psk,
+		ConfigPath:    cfg.ConfigPath,
+		StatePath:     cfg.StatePath,
 		// Rosenpass PQC on the inner mesh — the goat-client analogue of the
 		// `--enable-rosenpass` enrollment flag; sourced from the bundle policy
 		// via cfg. Needs embed.Options rosenpass support (dfarrel1/netbird#6).
