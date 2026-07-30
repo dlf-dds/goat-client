@@ -21,6 +21,9 @@ type Fake struct {
 	peers   []PeerStatus
 	logs    []string
 	maxLogs int
+	// failConnects makes the next N Connect calls fail with StateError —
+	// test hook for the daemon's mesh supervisor (retry-on-failed-bring-up).
+	failConnects int
 }
 
 // fakeLogCap is the Fake's log ring-buffer capacity. Big enough for
@@ -65,11 +68,27 @@ func (f *Fake) LastConfig() Config {
 	return f.cfg
 }
 
+// SetFailConnects makes the next n Connect calls fail, leaving the
+// Fake in StateError — the settled-failure state the daemon's mesh
+// supervisor retries from.
+func (f *Fake) SetFailConnects(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failConnects = n
+}
+
 func (f *Fake) Connect(ctx context.Context) error {
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
 		return errors.New("innermesh: closed")
+	}
+	if f.failConnects > 0 {
+		f.failConnects--
+		f.state = StateError
+		f.appendLogLocked("connect: injected failure")
+		f.mu.Unlock()
+		return errors.New("innermesh: injected connect failure")
 	}
 	f.state = StateConfiguring
 	f.appendLogLocked("connect: configuring")
