@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,10 +34,45 @@ const ObservedMax = 512
 // Store is the shared on-disk name store (design §4.1). The daemon is
 // the sole writer; any reader (goat-cli included) applies the same
 // verify-at-read rule, so shared bytes carry no trust cost.
+//
+// Concurrency: the DNS forwarder dispatches a goroutine per query
+// (miekg/dns), and this store sits on that hot path since the
+// forwarder began fronting all OS mesh-zone resolution. All methods
+// are safe for concurrent use; without the mutex, concurrent
+// RecordObservation read-modify-writes silently lost updates.
 type Store struct {
+	mu    sync.Mutex
 	dir   string
 	roots []*ecdsa.PublicKey
+
+	// Verified-snapshot cache, keyed on both files' stat identity
+	// (size + mtime). The forwarder consults the snapshot on every
+	// fallback answer; re-reading + re-verifying an ECDSA signature
+	// per DNS query is pure amplification when the bytes haven't
+	// changed. External tamper rewrites the files (new mtime/size via
+	// rename) and misses the key → the next read re-verifies and
+	// fails closed, preserving the tamper-evidence contract.
+	snapCache    *Snapshot
+	snapCacheKey string
+
+	// lastObs suppresses same-binding observation writes: the observed
+	// tier sees the same name→IP re-learned on every successful live
+	// answer, and each write is a full read-modify-write-sort-fsync.
+	// A binding identical to the one recorded within obsSuppress is a
+	// no-op.
+	lastObs map[string]obsMark
 }
+
+// obsMark is the suppression memo for one observed name.
+type obsMark struct {
+	ip string
+	at time.Time
+}
+
+// obsSuppress is how long an identical name→IP re-observation stays a
+// no-op write. Long enough to absorb resolver bursts, short enough
+// that ObservedAt staleness stays irrelevant vs ObservedTTL (30d).
+const obsSuppress = 60 * time.Second
 
 // NewStore opens (creating if needed) the store at dir, verifying
 // against roots — the same trust roots that verify enrollment bundles.
@@ -60,9 +96,22 @@ func NewStore(dir string, roots []*ecdsa.PublicKey) (*Store, error) {
 // Dir returns the store directory (for status surfaces).
 func (st *Store) Dir() string { return st.dir }
 
-// LoadSnapshot reads + verifies the cached snapshot. Every read
-// re-verifies the signature — a tampered cache file is inert.
+// LoadSnapshot returns the verified snapshot. Unchanged bytes (same
+// stat identity as the last verified read) serve from the in-memory
+// verified copy; any change to either file misses the cache and takes
+// the full read + signature-verify path — a tampered cache file is
+// still inert, without paying an ECDSA verify per DNS query.
 func (st *Store) LoadSnapshot() (*Snapshot, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.loadSnapshotLocked()
+}
+
+func (st *Store) loadSnapshotLocked() (*Snapshot, error) {
+	key := st.snapStatKey()
+	if st.snapCache != nil && key != "" && key == st.snapCacheKey {
+		return st.snapCache, nil
+	}
 	artifact, err := os.ReadFile(filepath.Join(st.dir, SnapshotFile))
 	if err != nil {
 		return nil, fmt.Errorf("no cached snapshot (seeded at import or refreshed from get.<site> while names work): %w", err)
@@ -71,7 +120,27 @@ func (st *Store) LoadSnapshot() (*Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cached snapshot has no signature file: %w", err)
 	}
-	return VerifyAndParse(artifact, sig, st.roots)
+	snap, err := VerifyAndParse(artifact, sig, st.roots)
+	if err != nil {
+		st.snapCache, st.snapCacheKey = nil, ""
+		return nil, err
+	}
+	st.snapCache, st.snapCacheKey = snap, key
+	return snap, nil
+}
+
+// snapStatKey derives the cache key from both files' size + mtime.
+// Empty when either stat fails (never cache a missing pair).
+func (st *Store) snapStatKey() string {
+	a, err := os.Stat(filepath.Join(st.dir, SnapshotFile))
+	if err != nil {
+		return ""
+	}
+	s, err := os.Stat(filepath.Join(st.dir, SigFile))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d/%d:%d", a.Size(), a.ModTime().UnixNano(), s.Size(), s.ModTime().UnixNano())
 }
 
 // ErrNotNewer reports a validly-signed candidate refused because its
@@ -88,7 +157,9 @@ func (st *Store) PutSnapshot(artifact, sig []byte) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cached, err := st.LoadSnapshot(); err == nil && cand.Serial <= cached.Serial {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if cached, err := st.loadSnapshotLocked(); err == nil && cand.Serial <= cached.Serial {
 		return nil, ErrNotNewer
 	}
 	// Signature first, artifact last: a torn write leaves an
@@ -100,6 +171,7 @@ func (st *Store) PutSnapshot(artifact, sig []byte) (*Snapshot, error) {
 	if err := writeAtomic(filepath.Join(st.dir, SnapshotFile), artifact, 0o644); err != nil {
 		return nil, err
 	}
+	st.snapCache, st.snapCacheKey = cand, st.snapStatKey()
 	return cand, nil
 }
 
@@ -108,6 +180,18 @@ func (st *Store) PutSnapshot(artifact, sig []byte) (*Snapshot, error) {
 // Best-effort: I/O failures are returned but callers may ignore them.
 func (st *Store) RecordObservation(name, ip string, now time.Time) error {
 	want := strings.ToLower(strings.TrimSuffix(name, "."))
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	// Same-binding suppression: the forwarder re-learns the same
+	// name→IP on every successful live answer; without this, every
+	// DNS query paid a full read-modify-write-sort-fsync.
+	if m, ok := st.lastObs[want]; ok && m.ip == ip && now.Sub(m.at) < obsSuppress {
+		return nil
+	}
+	if st.lastObs == nil {
+		st.lastObs = make(map[string]obsMark)
+	}
+	st.lastObs[want] = obsMark{ip: ip, at: now}
 	records := st.loadObserved()
 	kept := records[:0]
 	for _, o := range records {
@@ -135,6 +219,8 @@ func (st *Store) RecordObservation(name, ip string, now time.Time) error {
 // TTL-pruned at read.
 func (st *Store) LookupObserved(name string, now time.Time) *ObservedRecord {
 	want := strings.ToLower(strings.TrimSuffix(name, "."))
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	for _, o := range st.loadObserved() {
 		if now.Sub(time.Unix(o.ObservedAt, 0)) >= ObservedTTL {
 			continue
@@ -150,6 +236,8 @@ func (st *Store) LookupObserved(name string, now time.Time) *ObservedRecord {
 // ObservedCount reports how many valid observations the tier holds (for
 // status surfaces).
 func (st *Store) ObservedCount(now time.Time) int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	n := 0
 	for _, o := range st.loadObserved() {
 		if now.Sub(time.Unix(o.ObservedAt, 0)) < ObservedTTL {
