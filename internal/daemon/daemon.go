@@ -1220,6 +1220,10 @@ func (d *Daemon) SetInnerMeshProfile(_ context.Context, req ipc.SetInnerMeshProf
 	if len(req.PreSharedKey) > 0 {
 		cfg.PreSharedKey = append([]byte(nil), req.PreSharedKey...)
 	}
+	d.mu.RLock()
+	slug := d.currentSlug
+	d.mu.RUnlock()
+	d.fillMeshPersistPaths(&cfg, slug)
 	return mesh.Configure(cfg)
 }
 
@@ -1427,12 +1431,34 @@ func (d *Daemon) meshConfig(b *bundle.EnrollmentBundle) innermesh.Config {
 	cfg := meshConfigFromBundle(b)
 	d.mu.RLock()
 	ov := d.rosenpassOverride
+	slug := d.currentSlug
 	d.mu.RUnlock()
 	if ov != nil {
 		cfg.RosenpassEnabled = ov.Enabled
 		cfg.RosenpassPermissive = ov.Permissive
 	}
+	d.fillMeshPersistPaths(&cfg, slug)
 	return cfg
+}
+
+// fillMeshPersistPaths sets the embedded netbird client's per-profile
+// persistence paths, beside the profile store. An in-memory config
+// (empty ConfigPath) mints a NEW WireGuard identity on every Connect —
+// a new mgmt-registered peer, a consumed setup-key use, and a
+// different overlay IP per daemon restart / mode switch / Rosenpass
+// toggle. StatePath is set explicitly so the embed never falls through
+// to a co-installed stock netbird's active_profile.txt-derived state
+// file.
+func (d *Daemon) fillMeshPersistPaths(cfg *innermesh.Config, slug string) {
+	if d.store == nil {
+		return
+	}
+	if slug == "" {
+		slug = "default"
+	}
+	imDir := filepath.Join(d.store.Dir(), slug+".innermesh")
+	cfg.ConfigPath = filepath.Join(imDir, "config.json")
+	cfg.StatePath = filepath.Join(imDir, "state.json")
 }
 
 // GetDiagnostics returns the rolling log buffer + bookkeeping.

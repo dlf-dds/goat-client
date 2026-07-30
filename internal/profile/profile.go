@@ -562,6 +562,11 @@ func (s *Store) UpdateRosenpass(slug string, enabled, permissive *bool) error {
 	return s.writeMeta(slug, cur)
 }
 
+// Dir returns the store's root directory. The daemon derives adjacent
+// per-profile paths from it (e.g. the embedded netbird client's
+// persisted config + state under "<dir>/<slug>.innermesh/").
+func (s *Store) Dir() string { return s.dir }
+
 // --- internal file helpers ---
 
 func (s *Store) bundlePath(slug string) string { return filepath.Join(s.dir, slug+".cbor") }
