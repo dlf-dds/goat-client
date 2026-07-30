@@ -8,7 +8,115 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
-No work in flight beyond v0.3.2.
+### Fixed — wedge-class defects (#92)
+
+Four fixes for a client that had been wedging in the field over weeks. Two
+needed a real management plane to see at all, so they ship with a disposable
+cloud assay rather than unit tests alone.
+
+- **Stable mesh identity across restarts.** The embedded netbird client was
+  built with neither `ConfigPath` nor `StatePath`, so its config — including the
+  WireGuard private key — lived only in memory and a **new key was generated on
+  every Connect**. Every daemon restart, mode switch, and Rosenpass toggle
+  therefore registered a brand-new peer with management, consumed a setup-key
+  use, and moved the overlay IP: duplicate peers accumulating server-side,
+  eventual login failure against a usage-limited setup key, and an unstable
+  address under the connectivity check and file drop, which both assume a stable
+  per-peer overlay IP. The daemon now derives per-profile persistence paths
+  beside the profile store. Setting `StatePath` explicitly also severs a quieter
+  coupling: left empty, netbird's `profilemanager` falls through to **stock
+  netbird's own `active_profile.txt`-derived state file**, so goat-clientd and a
+  co-installed stock client shared DNS/route/firewall restore state — the
+  concurrent-run hazard the docs warn about.
+- **Inner mesh recovers a failed initial bring-up.** netbird's embedded
+  `ConnectClient` self-heals a mid-session drop, but a Connect that never
+  succeeded (management unreachable at boot, DNS not yet up, a transient auth
+  failure) left the daemon parked in `StateError` until a human sent another IPC
+  connect — the "worked until restart, then wedged" shape. A supervisor now
+  reconnects whenever the operator's standing intent says up and the mesh sits in
+  error, with exponential backoff (15s → 2m) that resets on recovery; a mesh
+  mid-transition is left alone so the supervisor never races another actor.
+- **Bounded inner-mesh connect.** Daemon-side Connect ran with the
+  server-lifetime context, so against an unreachable management plane it blocked
+  indefinitely as an orphaned in-flight operation after the CLI's own deadline
+  had already fired. Every bring-up now runs under a deadline (default 2m).
+- **Name-store correctness under load.** Since the forwarder began fronting all
+  OS mesh-zone resolution (0.3.4), the store has been on the hot path of every
+  mesh lookup with a goroutine per query — and it had no mutex, so concurrent
+  observation read-modify-writes raced and silently lost updates (atomic writes
+  prevented corruption, not loss). It also re-read and re-verified the snapshot's
+  ECDSA signature per fallback query and fsynced the observed tier per live
+  answer. All methods now lock; the verified snapshot is cached against both
+  files' stat identity, so any byte change still takes the full verify path and
+  tampering still fails closed; identical re-observations inside a 60s window no
+  longer rewrite the file.
+
+### Changed
+
+- netbird fork pin advanced on the goat-client lineage (`6fb9b15c` →
+  `b2374c3f`), picking up two client fixes for goat finding F-269: `Login` now
+  switches profiles when **either** name or username differs (the `&&`/`||`
+  predicate bug behind daemon-vs-CLI active-profile drift), and the relay client
+  refuses to hand a **provably expired** auth token to the relay, escalating
+  through a rate-limited callback to a full restart whose fresh management login
+  mints a fresh token. Previously the reconnect guard retried a dead token
+  forever with no path back to re-login — the mechanism that isolated one peer
+  for ~a day while every health surface read green.
+
+### Added
+
+- **Rosenpass (post-quantum) on the inner mesh from bundle policy** (#87), plus a
+  live `setRosenpass` daemon RPC that persists the intent per profile and
+  surfaces it in status (#88) — a goat-client device gets intra-mesh PQC the same
+  way standalone-netbird peers do at enrollment.
+- `internal/innermesh`: `Config.ConfigPath` / `Config.StatePath`; `Fake` gains
+  `SetFailConnects` for supervisor tests.
+- Daemon config: `InnerMeshConnectTimeout`, `MeshSupervisorInterval`,
+  `MeshSupervisorMax`.
+
+### Fixed — other
+
+- `--mode` now takes precedence as documented, and the local overlay IP has its
+  CIDR prefix stripped at the source, so consumers that bind to it (connectivity
+  check, file drop) get a bare host address (#91).
+- Packaging matches the daemon's actual flags, ships the trust-roots PEM, and
+  drops the stale notify dependency (#90).
+
+### Documentation
+
+- Do not run goat-client and a standalone NetBird client concurrently (#89) —
+  the state-file coupling fixed in #92 is the mechanism behind that warning.
+
+### Known gaps
+
+- The client cannot yet carry a peer-ID-bound relay auth-token tag (goat ADR
+  1021), so a management plane issuing peer-bound tokens would see this client
+  re-stamp them unbound and be rejected for an invalid signature. Do not enable
+  peer-bound tokens for goat-client peers until the pinned lineage picks that up.
+- `netbird status` still reports the CLI's belief of the active profile rather
+  than the daemon's, and relay auth failures remain indistinguishable from
+  network faults in relay state — the visibility half of F-269, best contributed
+  upstream.
+
+## [0.3.5] — 2026-07-17
+
+Adds the self-claims tier to device-wide name fallback (ADR 1082 Amendment 2):
+a peer's own claimed names are verified, stored, and served by the local
+forwarder. (#86)
+
+## [0.3.4] — 2026-07-16
+
+- The local forwarder now **fronts the OS's mesh-zone DNS** rather than sitting
+  beside it, unifying live-first resolution with signed-snapshot fallback
+  (ADR 1082). This is what put the name store on the per-query hot path. (#85)
+- netbird fork pin advanced to the L1 storm-resilience line: full-jitter backoff
+  on offer retries plus the per-peer-pair offer circuit breaker. (#84)
+
+## [0.3.3] — 2026-07-15
+
+- Device-wide name fallback: signed-snapshot store plus a local DNS forwarder,
+  so names keep resolving when mesh DNS is out (ADR 1082). (#83)
+- Inner-mesh status surfaces Rosenpass (post-quantum) state. (#82)
 
 ## [0.3.2] — 2026-07-01
 
@@ -755,7 +863,10 @@ commit `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe` (BSD-3-Clause). Design
 lineage cited per file; aggregate attribution in
 [`NOTICE`](NOTICE) + [`LICENSE.netbird-bsd3`](LICENSE.netbird-bsd3).
 
-[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.2...HEAD
+[Unreleased]: https://github.com/dlf-dds/goat-client/compare/goat-client-v0.3.5...HEAD
+[0.3.5]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.5
+[0.3.4]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.4
+[0.3.3]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.3
 [0.3.2]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.2
 [0.3.1]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.1
 [0.3.0]: https://github.com/dlf-dds/goat-client/releases/tag/goat-client-v0.3.0
