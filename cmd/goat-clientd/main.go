@@ -91,6 +91,15 @@ func main() {
 	// and wants a single command to take it from "file on disk" to
 	// "tunnels up".
 	if *importBundleFlag != "" {
+		// Hydrate the active profile first (goat-client #95): without this
+		// the daemon's active slug is empty, ImportBundle takes the
+		// create-"default" branch, and any pre-existing profile makes the
+		// import fail with "already exists" — turning the documented
+		// re-runnable install flow into a wedge. Errors are non-fatal: a
+		// corrupt persisted state must not block importing a good bundle.
+		if err := d.LoadPersistedBundle(); err != nil {
+			log.Printf("load persisted bundle before import: %v (continuing)", err)
+		}
 		if err := runImportBundleOneShot(d, *importBundleFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "import-bundle: %v\n", err)
 			os.Exit(1)

@@ -8,6 +8,45 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-07-31
+
+Validated release: the 2026-07-31 cloud assay ran the full six-check matrix
+against a real management plane on this exact fix set — enrollment, identity
+stability across restarts, unattended supervisor recovery, F-269 relay-token
+self-heal (client-log-corroborated), relay-path bridges, and the names
+forwarder under load — all PASS.
+
+### Fixed — cloud-assay follow-ups
+
+The 2026-07-31 cloud assay validated all four #92 wedge fixes against a real
+management plane (6/6 checks PASS) and surfaced three residual gaps; all
+three are fixed here so nothing rides the release as a known caveat.
+
+- **Peer-bound relay tokens now carried (goat ADR 1021).** The netbird
+  fork pin advances `b2374c3f` → `dcf56923`, porting the client half of the
+  peer-ID-bound relay-token patch onto the goat-client lineage: the
+  management-selected auth algo rides the login/sync `RelayConfig` and the
+  token store stamps it into the wire token instead of hardcoding the
+  unbound algo byte. A management server minting peer-bound (algo 2) tokens
+  no longer gets an invalid-signature reject from goat-client peers — the
+  operational rule "keep peer-bound tokens OFF for goat-client peers" is
+  retired. Old management servers that don't set the field keep working
+  (unset → unbound, byte-for-byte today's behavior).
+- **peerping no longer floods the journal on netstack (#94).** The headless
+  embed runs an in-process netstack TUN, so the overlay IP never exists on
+  the host and binding it can never succeed — peerping busy-retried the
+  bind every reconcile tick (3s), one error line each, drowning the exact
+  log lines a wedge triage needs. It now disables itself after one clear
+  log line and retries only when the mesh restarts. RTT stays honestly
+  unmeasured (`measured: false`) in netstack mode.
+- **`importBundle` replaces instead of wedging (#95).** A profile persisted
+  on disk but not adopted in memory (the one-shot `--import-bundle` shape,
+  or a prior import of a bad bundle) made every subsequent import fail with
+  `profile: already exists: slug "default"` — recovery required wiping
+  `/var/lib/goat-client/`. The one-shot now hydrates the active profile
+  first, and the create-default path falls back to an in-place replace when
+  the slug exists. Regression-tested.
+
 ### Fixed — wedge-class defects (#92)
 
 Four fixes for a client that had been wedging in the field over weeks. Two
