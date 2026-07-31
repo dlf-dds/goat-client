@@ -747,6 +747,15 @@ func (d *Daemon) runPeerConn(ctx context.Context) {
 	var (
 		ctrl   peerConnController
 		cancel context.CancelFunc
+		// failedBind remembers a bind address Start already failed on, so
+		// the reconcile loop does not busy-retry (and log-flood) a bind
+		// that can never succeed. The signature case is netstack mode
+		// (goat-client #94): the overlay IP exists only inside the
+		// in-process TUN, so binding it on the host fails with "cannot
+		// assign requested address" — forever. Cleared when the mesh goes
+		// down, so a mesh restart (possibly with a new IP or a kernel TUN)
+		// gets exactly one fresh attempt.
+		failedBind string
 	)
 	stop := func() {
 		if ctrl != nil {
@@ -755,6 +764,7 @@ func (d *Daemon) runPeerConn(ctx context.Context) {
 			ctrl = nil
 			d.setPeerConn(nil)
 		}
+		failedBind = ""
 	}
 	defer stop()
 
@@ -773,13 +783,18 @@ func (d *Daemon) runPeerConn(ctx context.Context) {
 			if localIP, err := mesh.LocalIP(); err == nil && localIP != "" {
 				bind = net.JoinHostPort(localIP, strconv.Itoa(peerping.DefaultPort))
 			}
+			if bind != "" && bind == failedBind {
+				return
+			}
 			cctx, ccancel := context.WithCancel(ctx)
 			c := d.peerConnFactory(bind)
 			if err := c.Start(cctx); err != nil {
 				ccancel()
-				d.logf("peerping start: %v", err)
+				d.logf("peerping disabled: %v (bind %s unavailable on the host — netstack mode keeps the overlay IP in-process; RTT stays unmeasured until the mesh restarts)", err, bind)
+				failedBind = bind
 				return
 			}
+			failedBind = ""
 			ctrl, cancel = c, ccancel
 			d.setPeerConn(c)
 		}
@@ -901,6 +916,20 @@ func (d *Daemon) ImportBundle(ctx context.Context, req ipc.ImportBundleRequest) 
 			Mode:        currentMode,
 			BundleBytes: req.BundleBytes,
 		})
+		if errors.Is(err, profile.ErrAlreadyExists) {
+			// A "default" profile exists on disk but is not adopted in
+			// memory (e.g. its bundle failed to load at startup, or an
+			// earlier import persisted a bad bundle — goat-client #95).
+			// Importing a verified bundle is the operator's explicit
+			// replace action; refusing here wedges recovery behind a
+			// manual state wipe.
+			info, err = d.store.Add(profile.AddProfileRequest{
+				Name:        "default",
+				Mode:        currentMode,
+				BundleBytes: req.BundleBytes,
+				Replace:     true,
+			})
+		}
 		if err != nil {
 			return ipc.ImportBundleReply{}, fmt.Errorf("add default profile: %w", err)
 		}

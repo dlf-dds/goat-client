@@ -137,6 +137,35 @@ func TestImportBundleReplacesActiveProfile(t *testing.T) {
 
 // TestAddTwoProfilesAndSwitchUnder2s is the load-bearing verdict-gate
 // regression. Two profiles in one daemon, switch between them, assert
+// TestImportBundleReplacesUnadoptedProfile — goat-client #95: a
+// "default" profile exists ON DISK but the daemon has not adopted it
+// (fresh process, LoadPersistedBundle not run — the one-shot
+// --import-bundle shape). ImportBundle must replace it in place, not
+// fail with "already exists" and wedge recovery behind a state wipe.
+func TestImportBundleReplacesUnadoptedProfile(t *testing.T) {
+	tb1 := mintTestBundle(t, true, "")
+	d1, dir := newProfilesDaemon(t, tb1.roots, mode.WGCP0Only)
+	ctx := context.Background()
+	if _, err := d1.ImportBundle(ctx, ipc.ImportBundleRequest{BundleBytes: tb1.bytes}); err != nil {
+		t.Fatalf("ImportBundle 1: %v", err)
+	}
+
+	// Fresh daemon over the same store, deliberately NOT hydrated —
+	// its in-memory active slug is empty while "default" sits on disk.
+	d2 := reopenDaemon(t, dir, tb1.roots, mode.WGCP0Only)
+	tb2 := mintTestBundleWithRoots(t, true, "", tb1.roots)
+	if _, err := d2.ImportBundle(ctx, ipc.ImportBundleRequest{BundleBytes: tb2.bytes}); err != nil {
+		t.Fatalf("ImportBundle over unadopted on-disk profile: %v", err)
+	}
+	reply, err := d2.ListProfiles(ctx)
+	if err != nil {
+		t.Fatalf("ListProfiles: %v", err)
+	}
+	if len(reply.Profiles) != 1 {
+		t.Errorf("expected 1 profile (in-place replace); got %d: %+v", len(reply.Profiles), reply.Profiles)
+	}
+}
+
 // the round-trip completes in <2s with cached-creds (Fake innermesh).
 func TestAddTwoProfilesAndSwitchUnder2s(t *testing.T) {
 	tb1 := mintTestBundle(t, true, "http://mgmt.example.invalid")
