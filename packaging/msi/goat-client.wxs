@@ -98,7 +98,18 @@
                                     Account="LocalSystem"
                                     Vital="yes"
                                     Interactive="no"
-                                    Arguments="run --bundle-dir=&quot;[CommonAppDataFolder]goat-client&quot; --ipc-pipe=\\.\pipe\goat-client --config=&quot;[CommonAppDataFolder]goat-client\config.toml&quot;" />
+                                    Arguments="--bundle=&quot;[CommonAppDataFolder]goat-client\bundle.cbor&quot; --socket=\\.\pipe\goat-client --trust-roots=&quot;[CommonAppDataFolder]goat-client\trust-roots.pem&quot; --config=&quot;[CommonAppDataFolder]goat-client\config.toml&quot;" />
+                    <!-- Arguments MUST match goat-clientd's registered flags
+                         (-bundle / -socket / -trust-roots / -config; see
+                         cmd/goat-clientd/main.go). The pre-0.3.7 form was
+                         `run --bundle-dir= --ipc-pipe= --log-file=`: no such
+                         subcommand or flags exist, and Go's flag package
+                         stops at the first non-flag ("run"), so EVERY
+                         argument was silently ignored and the service ran
+                         on LocalSystem's default per-user paths — the same
+                         defect class PR #90 fixed in the deb/rpm/dmg units,
+                         missed here. -->
+
                     <ServiceControl Id="GoatClientServiceControl"
                                     Name="goat-clientd"
                                     Start="install"
