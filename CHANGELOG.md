@@ -8,6 +8,23 @@ with the `goat-client-` tag prefix described in [`CONTRIBUTING.md`](CONTRIBUTING
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-07-31
+
+### Fixed
+
+- **Windows MSI service arguments corrected.** The `ServiceInstall` passed
+  `run --bundle-dir= --ipc-pipe= --log-file=` — no such subcommand or flags
+  exist, and Go's flag parsing stops at the first non-flag (`run`), so every
+  argument was silently ignored and the service ran on default per-user
+  paths under LocalSystem. Now passes the real flags
+  (`--bundle/--socket/--trust-roots/--config`) with explicit
+  `%ProgramData%\goat-client\` paths — the same defect class PR #90 fixed
+  in the deb/rpm/dmg units, missed in the MSI. Found in the post-assay
+  packaging sweep; no Linux/macOS changes.
+- Stale Ed25519 doc claims retired (#97) — the offline-CA root and bundle
+  signatures are ECDSA P-256 throughout; one stale claim had misled an
+  install playbook into a crash-looping deployment.
+
 ## [0.3.6] — 2026-07-31
 
 Validated release: the 2026-07-31 cloud assay ran the full six-check matrix
