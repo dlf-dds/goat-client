@@ -14,7 +14,7 @@
 // alternative delivery path; the desktop bundle-import dialog accepts it
 // directly.
 //
-// The QR is just transport. Authentication is provided by the Ed25519
+// The QR is just transport. Authentication is provided by the ECDSA P-256
 // signature inside the CBOR bundle, verified downstream against the
 // pinned offline-CA root by internal/bundle.
 package main
@@ -78,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if *outPath != "" {
 		// ECC level Low matches the QR sizing budget assumed in
 		// docs/qr-bundle.md: bundles are short-lived and authenticated
-		// inside (Ed25519 over the CBOR), so we do not need the QR's
+		// inside (ECDSA P-256 over the CBOR), so we do not need the QR's
 		// own ECC to recover from heavy damage; we want max payload
 		// headroom instead.
 		qr, err := qrcode.New(payload, qrcode.Low)
