@@ -23,7 +23,7 @@ import (
 //  1. user picks a file (button OR drags it onto the window)
 //  2. pane parses preview metadata locally and renders it
 //  3. on Apply, pane hands raw bytes to the daemon via ipc.ImportBundle,
-//     which is the authoritative parse + Ed25519 verify step
+//     which is the authoritative parse + ECDSA P-256 verify step
 //  4. window refreshes status pane afterwards
 type bundlePane struct {
 	window fyne.Window

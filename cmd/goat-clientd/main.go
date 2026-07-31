@@ -39,7 +39,7 @@ import (
 
 func main() {
 	bundlePath := flag.String("bundle", daemon.DefaultBundlePath(), "path to persisted CBOR bundle")
-	trustRootsPath := flag.String("trust-roots", daemon.DefaultTrustRootsPath(), "path to PEM file containing offline-CA ECDSA P-256 or Ed25519 public keys")
+	trustRootsPath := flag.String("trust-roots", daemon.DefaultTrustRootsPath(), "path to PEM file containing offline-CA ECDSA P-256 public keys (Ed25519 retired at Block 79; an Ed25519 anchor fails to load)")
 	socketPath := flag.String("socket", daemon.DefaultSocketPath(), "IPC endpoint (Unix socket path or Windows named-pipe name)")
 	configPath := flag.String("config", mode.DefaultConfigPath(), "path to goat-client config.toml (v0.2 mode selector)")
 	modeFlag := flag.String("mode", "", "v0.2 active mode override (wg-cp0-only|netbird-only|combined); empty = use --config file")
@@ -202,7 +202,7 @@ func loadTrustRoots(path string) (*bundle.TrustRoots, error) {
 	tr, err := bundle.LoadTrustRootsFromFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("trust-roots file %s does not exist (drop the offline-CA ECDSA P-256 or Ed25519 pubkey PEM there)", path)
+			return nil, fmt.Errorf("trust-roots file %s does not exist (drop the offline-CA ECDSA P-256 pubkey PEM there)", path)
 		}
 		return nil, err
 	}

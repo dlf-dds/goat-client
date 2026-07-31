@@ -1,5 +1,7 @@
-// Package trustanchor pins the offline-CA Ed25519 root public keys that
-// goat-client will accept as bundle signers.
+// Package trustanchor pins the offline-CA ECDSA P-256 root public keys
+// that goat-client will accept as bundle signers. (The Ed25519 root was
+// retired substrate-wide at Block 79; parseSPKI hard type-asserts
+// *ecdsa.PublicKey and an Ed25519 anchor fails to load at daemon start.)
 //
 // Per ADR 0840 D5 (DesertBreadBird@docs/adr/0840-…), the trust anchor is
 // not user-configurable. The active set is compiled into the binary at
