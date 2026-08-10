@@ -141,6 +141,14 @@ cosign verify-blob \
 sha256sum -c SHA256SUMS    # verifies whichever archives are present locally
 ```
 
+## Running on NVIDIA Jetson?
+
+The tegra kernels compile WireGuard out, so clients fall back to userspace
+wireguard-go. [jetson-wireguard-kmod](https://github.com/DesertGOAT/jetson-wireguard-kmod)
+provides prebuilt, provenance-pinned kernel modules (JetPack 6.x / 7.x) that
+switch the data plane to kernelspace — roughly 2× throughput at lower CPU,
+no client changes needed.
+
 ## License
 
 Apache 2.0 (see [LICENSE](LICENSE)). Forked from netbird's BSD-3-Clause-licensed `client/` tree at upstream commit `3fc5a8d4a1fe308ff1068764a09b90b0859ab8fe` (see [NOTICE](NOTICE) and [LICENSE.netbird-bsd3](LICENSE.netbird-bsd3) for attribution + license preservation).
