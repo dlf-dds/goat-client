@@ -53,6 +53,25 @@ jobs:
       - name: go build
         run: go build ./...
 
+  packaging-flags:
+    name: packaging flag contract
+    # Every flag an installer hands goat-clientd must be one the daemon
+    # registers. Go's flag package exits 2 on the first unknown flag, so
+    # a mismatch crash-loops the daemon on every host the package
+    # touches. That shipped twice — deb/rpm/dmg in #90, the identical
+    # defect still live in the MSI in #98/#99 — both found by reading
+    # packaging source, because nothing in CI checked. Cheap and static,
+    # so it runs on every PR rather than only on the release path.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check packaged flags against the daemon's flag set
+        run: scripts/check-packaging-flags.sh
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest

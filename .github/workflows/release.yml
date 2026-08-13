@@ -451,13 +451,18 @@ jobs:
           retention-days: 90
 
   package-deb-smoke:
-    name: package smoke (.deb, linux/amd64)
+    name: package smoke (.deb, linux/amd64) — build, inspect, install, start
     # Track F's packaging expects dist/<goos>_<goarch>/ to contain BOTH
     # binaries; this job exercises that contract by unpacking the
     # gui-matrix linux/amd64 archive into the layout, running nfpm, and
     # linting the resulting .deb. Confirms the GUI binary is now picked
     # up by the package — was previously a `ghost` placeholder because
     # daemon-only archives didn't carry it.
+    #
+    # It now also installs the package and asserts the service reaches
+    # `active` (final step). Building and inspecting a package says
+    # nothing about whether it runs, which is how a crash-looping
+    # systemd unit shipped in #90.
     needs: build-gui-matrix
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -514,6 +519,62 @@ jobs:
           set -euo pipefail
           deb=$(find dist -maxdepth 1 -name 'goat-client_*_amd64.deb' -print -quit)
           lintian --no-tag-display-limit "$deb" || true
+      - name: Install the .deb and assert the service actually starts
+        # THE gate this job was missing. Until now nothing installed the
+        # desktop package — it was built, inspected with `dpkg-deb -c`,
+        # linted, and shipped. So when the systemd unit passed flag names
+        # goat-clientd doesn't register (#90), the unit crash-looped on
+        # every host that installed it and CI stayed green. The identical
+        # defect then shipped in the MSI (#98/#99).
+        #
+        # The headless sibling job installs its own package but tolerates
+        # a dead unit (`systemctl status || true`) on the rationale that
+        # trust roots aren't available in CI. That rationale expired in
+        # #90: every package now seeds /etc/goat-client/trust-roots.pem,
+        # so a correctly-packaged daemon reaches `active` with no bundle
+        # and no mesh — it just sits with nothing imported. That makes
+        # `is-active` a legitimate assertion rather than a flake.
+        run: |
+          set -euo pipefail
+          deb=$(find dist -maxdepth 1 -name 'goat-client_*_amd64.deb' -print -quit)
+          sudo apt-get install -y "./$deb"
+
+          # The seeded trust roots are what make the next assertion fair.
+          test -s /etc/goat-client/trust-roots.pem
+
+          # The unit is WantedBy multi-user.target and enabled by the
+          # postinstall, but nothing has started it in this session.
+          sudo systemctl start goat-clientd.service || true
+
+          for i in $(seq 1 15); do
+            state="$(systemctl is-active goat-clientd.service || true)"
+            [ "$state" = "active" ] && break
+            sleep 2
+          done
+
+          if [ "$(systemctl is-active goat-clientd.service || true)" != "active" ]; then
+            echo "::error::goat-clientd.service did not reach active after install."
+            echo "--- systemctl status ---"
+            systemctl status goat-clientd.service --no-pager --full || true
+            echo "--- journal ---"
+            sudo journalctl -u goat-clientd.service --no-pager -n 100 || true
+            echo
+            echo "If the journal shows 'flag provided but not defined', the"
+            echo "unit is passing a flag goat-clientd does not register —"
+            echo "the #90 / #98 defect class. scripts/check-packaging-flags.sh"
+            echo "catches that statically; fix packaging/deb/systemd/."
+            exit 1
+          fi
+
+          echo "goat-clientd.service is active after a clean .deb install."
+          systemctl show -p MainPID -p ActiveState -p SubState goat-clientd.service
+
+          # Removal must not leave a running daemon behind.
+          sudo apt-get remove -y goat-client
+          if systemctl is-active --quiet goat-clientd.service; then
+            echo "::error::goat-clientd.service still active after package removal."
+            exit 1
+          fi
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
